@@ -79,3 +79,71 @@
 
 - 0 high/moderate vulnerabilities after M1 close
 - 2 low-severity transitive eslint advisories remain (fixed byproduct of M2 flat-config migration)
+
+## M2: Player Model — 2026-04-18
+
+### What worked
+
+- **Pre-work verification of load-bearing constants.** The plan flagged Slim UV values at 85% confidence. Before writing `lib/three/geometry.ts`, a single WebFetch against skinview3d's `setSkinUVs(box, u, v, w, h, d)` helper algebraically confirmed all 24 Slim faces. 85% → 99% confidence with one HTTP call. Pattern: when a plan marks a load-bearing artifact as confidence-risked, verify it *before* writing, not after.
+- **Hybrid Opus+Sonnet dispatch.** `constants.ts` and `placeholder-skin.ts` (template-fillable, no cross-file reasoning) went to parallel Sonnet subagents; `geometry.ts` (72-row UV table + helper) and `PlayerModel.tsx` (zero-alloc `useFrame`) stayed with Opus. Both Sonnet outputs usable first try, ~40% wall-clock savings over pure-Opus.
+- **`/ce:review` cross-reviewer convergence.** 9 parallel reviewers; the 2 P1 findings (GPU leak + texture race) came from 6-of-9 and 5-of-9 agreement respectively. Single-reviewer findings were mostly dismissed after inspection; convergence was the strongest signal for severity and confidence.
+- **Split commits per logical change** (migration → font → lib/three → EditorCanvas → lockfile → review-fixes). Clean bisect path if anything regresses.
+
+### What didn't
+
+- **ESLint flat-config codemod output was wrong twice.** `npx @next/codemod@canary next-lint-to-eslint-cli .` generated (1) an import path missing `.js` that Node ESM rejected, and (2) a direct import from `eslint-config-next/core-web-vitals` that returned legacy `{ extends: [...] }` not a flat-config array. Fix required `FlatCompat` via `@eslint/eslintrc` exactly as M1 COMPOUND predicted. Also: `.next/` was walked into by default (`next lint` had implicit ignores; flat-config does not) — required explicit `ignores: ['.next/**', ...]`.
+- **Plan's `usePlaceholderTexture` used `useMemo`; failed SSR prerender** with `ReferenceError: document is not defined`. `useMemo` runs during render, including during static prerender; `document.createElement` is client-only. Refactored to `useEffect` during `/ce:work`; preserves `○ (Static)` classification without needing `next/dynamic({ ssr: false })`. Plan spec-bug, not code-bug.
+- **PlayerModel's first draft claimed three.js auto-disposes geometries on mesh unmount.** False for prop-passed geometries. 6-of-9 reviewers flagged. See `docs/solutions/performance-issues/r3f-geometry-prop-disposal-2026-04-18.md` for the full writeup.
+
+### Invariants discovered
+
+- **R3F geometry lifecycle:** declarative `<boxGeometry>` JSX children are R3F-owned (auto-disposed). `<mesh geometry={...}>` prop-passed instances are caller-owned — must dispose via `useEffect` cleanup. Same rule applies to textures, render targets, and shader materials passed as props.
+- **`PART_ORDER: Record<Union, T>` for compile-time exhaustive arrays.** A typed record literal forces every union member to appear. `Object.keys(record) as readonly Union[]` derives a runtime array guaranteed to cover the union. Stronger than `as const satisfies readonly Union[]` which allows subsets.
+- **Tailwind v4 `@theme` resolves at runtime, not build time.** `--font-sans: var(--font-geist), Inter, ...` in `@theme` is not baked into utilities; Tailwind compiles `@theme` to `:root` custom properties and the `.font-sans` utility becomes `font-family: var(--font-sans)` which cascades normally. `next/font` setting `--font-geist` on `<body>` feeds through automatically.
+- **Slim UV packing convention:** contiguous-start at x=40 (right arm) / x=32 (left arm) with unused tail. Face-by-face verified against skinview3d. 72 UVs pinned in `lib/three/geometry.ts` — canonical for M3, M4, M5, M7, M11.
+- **Minecraft overlay geometry is intentionally larger than its UV.** Overlay boxes are +1 pixel on each axis; UVs share the base texture at original dimensions. Creates the "puffier outer shell" effect. Not a bug — adversarial reviewer flagged as stretch, dismissed as ecosystem precedent.
+
+### Gotchas for future milestones
+
+- **DOM touches in React hooks must use `useEffect`, not `useMemo`.** Any `document.*`, `new Image()`, `navigator.*`, `window.*` access at render time breaks Next.js static prerender. Gate with `useEffect` even if it complicates the consumer (null-check + conditional render).
+- **Async-resource hooks need a `cancelled` flag.** For patterns like `new Image()` + `img.onload` + `tex.dispose()` cleanup: a `let cancelled = false` checked in `onload`/`onerror`, and handlers nulled in cleanup, prevents rapid prop-toggle races where the old handler fires on a disposed resource.
+- **Variant/mode toggle buttons need ARIA + `data-*`.** `aria-pressed` + `data-variant` + `data-testid` are additive; agents and tests can assert state without OCR. Adding them retroactively in `/ce:review` is fine but bake them in from the start in M3+.
+- **`useFrame` zero-allocation invariant is fragile on refactor.** Inline comment at top of the callback says so, but M3 will extend it with hover-highlight state. Authors must not add `new Vector3`, destructure `state`, use template strings, or introduce closure captures. Read the invariant comment before editing.
+- **`/ce:plan` smoke-check vocabulary:** `○ (Static)`, `λ Dynamic`, `ƒ Function` from `next build` output are the canonical render-mode markers. `.next/server/app/*.html` does not exist in App Router. (Re-stating from M1 because the temptation to file-system-check keeps reappearing.)
+
+### Pinned facts for next milestones
+
+**Exact version deltas from M1:**
+
+- `eslint` 9.18.0 → **9.39.4** (resolves both low-severity `@eslint/plugin-kit <0.3.4` ReDoS advisories)
+- `@eslint/eslintrc` → **3.3.1** (new — FlatCompat bridge for `eslint-config-next`)
+- Lint command: `"lint": "next lint"` → **`"eslint ."`**
+- `.eslintrc.json` deleted; replaced by `eslint.config.mjs` with flat config + explicit ignores for `.next/**`, `node_modules/**`, `out/**`, `build/**`, `next-env.d.ts`
+- All other M1 pins unchanged.
+
+**File paths established:**
+
+- `lib/three/constants.ts` — camera (position/target/FOV), breathing (1.5 Hz / 0.01), orbit (±3°, 9s, 500ms warm-up), rim-light `0x7FD6FF` (pinned, unused until M3)
+- `lib/three/geometry.ts` — `CLASSIC_UVS` + `SLIM_UVS` + `PlayerPart` union + `BoxUVs` type + `partDims(variant, part)` + `partPosition(variant, part)` + `mapBoxUVs(geo, uvs)` + `getUVs(variant)`
+- `lib/three/placeholder-skin.ts` — `createPlaceholderSkinDataURL(variant)` (replaced in M7)
+- `lib/three/PlayerModel.tsx` — `'use client'`, 16-mesh humanoid, single coalesced `useFrame`, `useEffect` disposal on variant change
+
+**Conventions established:**
+
+- `'use client'` is permitted in `lib/three/PlayerModel.tsx` only (sole exception to "pure `lib/` never client"). Pattern: UI-component-shaped React files that happen to live in `lib/` for domain clustering may be client; pure-logic files never are.
+- `PART_ORDER: Record<Union, T>` + `Object.keys(...) as readonly Union[]` for exhaustive arrays.
+- `useEffect`-based async resource hooks with `cancelled` flag + handler-null-in-cleanup.
+
+**Bundle baseline update:**
+
+- `/editor`: 238 → **241 kB** route chunk, 340 → **343 kB** First Load JS (+0.9%, well within ±30% tolerance)
+- `/` (landing): 3.45 kB / 106 kB (unchanged)
+
+**Audit baseline:**
+
+- **0 vulnerabilities** (down from M1's 2 low-severity transitive ReDoS). The flat-config migration + eslint 9.39.4 resolved both as a byproduct exactly as M1 COMPOUND sequenced.
+
+### Recommended reading for M3
+
+- `docs/solutions/performance-issues/r3f-geometry-prop-disposal-2026-04-18.md` — before M3 adds more GPU resources (textures via `TextureManager`, shader material in M8), apply the same useEffect-dispose pattern.
+- This file's M2 "Invariants" section — the Tailwind `@theme` runtime chain and PART_ORDER exhaustiveness pattern will be immediately reused by M3's tool palette.
