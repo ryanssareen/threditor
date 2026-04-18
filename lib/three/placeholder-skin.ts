@@ -8,8 +8,7 @@
  */
 
 import { SKIN_ATLAS_SIZE } from './constants';
-
-type SkinVariant = 'classic' | 'slim';
+import { type PlayerPart, type SkinVariant } from './geometry';
 
 type Rect = { x: number; y: number; w: number; h: number };
 
@@ -28,8 +27,11 @@ const COLORS = {
  * Rects are keyed by body part; each rect spans the full atlas footprint for
  * that part (we do not need per-face precision for the placeholder — whole-part
  * fills are sufficient to verify the UV toggle works).
+ *
+ * Typed `Record<PlayerPart, Rect[]>` so adding a new PlayerPart to the union
+ * produces a compile error here until a rect is supplied.
  */
-const CLASSIC_PART_RECTS: Record<string, Rect[]> = {
+const CLASSIC_PART_RECTS: Record<PlayerPart, Rect[]> = {
   head: [{ x: 0, y: 0, w: 32, h: 16 }],
   headOverlay: [{ x: 32, y: 0, w: 32, h: 16 }],
   body: [{ x: 16, y: 16, w: 24, h: 16 }],
@@ -54,12 +56,12 @@ function fillRect(ctx: CanvasRenderingContext2D, rect: Rect, color: string): voi
   ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
 }
 
-function partColor(part: string): string {
+function partColor(part: PlayerPart): string {
   if (part.startsWith('head')) return part.endsWith('Overlay') ? COLORS.overlay : COLORS.head;
   if (part.startsWith('body')) return part.endsWith('Overlay') ? COLORS.overlay : COLORS.body;
   if (part.includes('Arm')) return part.endsWith('Overlay') ? COLORS.overlay : COLORS.arm;
   if (part.includes('Leg')) return part.endsWith('Overlay') ? COLORS.overlay : COLORS.leg;
-  return '#FF00FF'; // magenta = bug marker
+  return '#FF00FF'; // magenta = bug marker (unreachable given PlayerPart exhaustiveness)
 }
 
 /**
@@ -79,7 +81,7 @@ export function createPlaceholderSkinDataURL(variant: SkinVariant): string {
   ctx.imageSmoothingEnabled = false;
 
   const rects = variant === 'classic' ? CLASSIC_PART_RECTS : SLIM_PART_RECTS;
-  for (const [part, list] of Object.entries(rects)) {
+  for (const [part, list] of Object.entries(rects) as Array<[PlayerPart, Rect[]]>) {
     for (const rect of list) {
       fillRect(ctx, rect, partColor(part));
     }

@@ -10,7 +10,7 @@
  */
 
 import { useFrame } from '@react-three/fiber';
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { BoxGeometry, type Mesh, type Texture } from 'three';
 
 import {
@@ -37,20 +37,26 @@ type Props = {
   variant: SkinVariant;
 };
 
-const PARTS: readonly PlayerPart[] = [
-  'head',
-  'body',
-  'rightArm',
-  'leftArm',
-  'rightLeg',
-  'leftLeg',
-  'headOverlay',
-  'bodyOverlay',
-  'rightArmOverlay',
-  'leftArmOverlay',
-  'rightLegOverlay',
-  'leftLegOverlay',
-] as const;
+// PART_ORDER is typed `Record<PlayerPart, number>`, forcing the object literal
+// to cover every PlayerPart. Adding a new member to the union (e.g., 'cape' in
+// a future milestone) produces a compile error until the key is added here.
+// PARTS is derived from PART_ORDER keys, guaranteeing exhaustiveness.
+const PART_ORDER: Record<PlayerPart, number> = {
+  head: 0,
+  body: 1,
+  rightArm: 2,
+  leftArm: 3,
+  rightLeg: 4,
+  leftLeg: 5,
+  headOverlay: 6,
+  bodyOverlay: 7,
+  rightArmOverlay: 8,
+  leftArmOverlay: 9,
+  rightLegOverlay: 10,
+  leftLegOverlay: 11,
+};
+
+const PARTS = Object.keys(PART_ORDER) as readonly PlayerPart[];
 
 // Unpack constants once at module load to avoid repeated property access in the
 // hot loop. (Micro-opt, but it also makes the zero-allocation contract easier
@@ -62,12 +68,11 @@ const TARGET_Z = CAMERA_LOOK_TARGET[2];
 export function PlayerModel({ texture, variant }: Props): React.ReactElement {
   const headRef = useRef<Mesh>(null);
 
-  const uvs = useMemo(() => getUVs(variant), [variant]);
-
-  // Pre-build 12 geometries per variant. useMemo on [variant] means Classic↔Slim
-  // toggle swaps all boxes atomically. Dispose old geometries on unmount via
-  // useMemo cleanup (BoxGeometry holds GPU resources).
+  // Build 12 BoxGeometries for this variant. PARTS is exhaustive over
+  // PlayerPart (enforced by PART_ORDER), so every key is populated by the
+  // loop — the final cast is safe.
   const geometries = useMemo(() => {
+    const uvs = getUVs(variant);
     const map = {} as Record<PlayerPart, BoxGeometry>;
     for (const part of PARTS) {
       const [w, h, d] = partDims(variant, part);
@@ -76,13 +81,21 @@ export function PlayerModel({ texture, variant }: Props): React.ReactElement {
       map[part] = geo;
     }
     return map;
-    // texture is intentionally omitted; geometry doesn't depend on it
-  }, [variant, uvs]);
+  }, [variant]);
 
-  // Dispose previous geometries when variant changes.
-  // (We can't use a cleanup effect cleanly with useMemo; instead rely on
-  // three.js's automatic disposal on mesh unmount + manual dispose of prior
-  // memo result. For M2 the leak is bounded — one geometry set per toggle.)
+  // Dispose the GPU buffers for the previous geometry set whenever `geometries`
+  // changes (variant toggle) or the component unmounts. R3F auto-disposes
+  // declarative `<boxGeometry>` JSX children because it owns their lifecycle,
+  // but a geometry passed as a prop (`<mesh geometry={...} />`) is caller-
+  // owned — we must dispose it ourselves or the BoxGeometry's VRAM leaks on
+  // every variant toggle.
+  useEffect(() => {
+    return () => {
+      for (const part of PARTS) {
+        geometries[part].dispose();
+      }
+    };
+  }, [geometries]);
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
