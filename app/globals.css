@@ -14,8 +14,8 @@
   --color-text-secondary: #A3A3A3;
   --color-text-muted: #525252;
 
-  --font-sans: Geist, Inter, ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: var(--font-geist), Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --radius-sm: 0.125rem;
   --radius-md: 0.375rem;
@@ -32,10 +32,4 @@ body {
 
 html {
   color-scheme: dark;
-}
-
-body {
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
