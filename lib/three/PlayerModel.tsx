@@ -134,7 +134,7 @@ export function PlayerModel({ texture, variant }: Props): React.ReactElement {
           >
             <meshStandardMaterial
               map={texture}
-              transparent={true}
+              transparent={isOverlay}
               alphaTest={isOverlay ? 0.01 : 0}
               depthWrite={!isOverlay}
             />
