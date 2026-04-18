@@ -23,12 +23,10 @@ function RotatingCube() {
 
 export function EditorCanvas() {
   return (
-    <div className="h-dvh w-dvw bg-ui-base">
-      <Canvas camera={{ position: [3, 3, 3], fov: 50 }}>
-        <ambientLight intensity={0.4} />
-        <directionalLight position={[3, 5, 2]} intensity={1.1} />
-        <RotatingCube />
-      </Canvas>
-    </div>
+    <Canvas camera={{ position: [3, 3, 3], fov: 50 }} className="h-dvh w-dvw">
+      <ambientLight intensity={0.4} />
+      <directionalLight position={[3, 5, 2]} intensity={1.1} />
+      <RotatingCube />
+    </Canvas>
   );
 }
