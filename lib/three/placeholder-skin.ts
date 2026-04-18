@@ -3,7 +3,11 @@
  * Returns a 64x64 RGBA data URL with distinct hues per body-part region so the
  * Classic↔Slim variant toggle produces a visibly different render.
  *
- * M7 replaces this with the real Microsoft minecraft-samples blank-better.png.
+ * Palette is intentionally high-contrast for debug visibility, not aesthetic —
+ * M2 visual review noted the purple-arm / blue-body pairing reads as "mushy"
+ * against the OLED-dark background. That's acceptable because this whole file
+ * is replaced by the real Microsoft minecraft-samples skin in M7.
+ *
  * TODO(M7): replace with public/templates/classic/blank-better.png loader.
  */
 

@@ -32,7 +32,10 @@ export const CAMERA_FOV = 32;
 export const IDLE_ORBIT_START_SEC = 0.5;
 export const IDLE_ORBIT_PERIOD_SEC = 9; // midpoint of 8-10s spec
 export const IDLE_ORBIT_AMPLITUDE_RAD = 0.0524; // 3° in radians
-export const IDLE_ORBIT_RADIUS = 4.5; // must match CAMERA_POSITION[2]
+// Derived from CAMERA_POSITION[2] so the orbit preserves the initial camera
+// distance by construction. Hardcoding as a second literal invited drift — see
+// /ce:review E1/F1 discussion in M2 COMPOUND.
+export const IDLE_ORBIT_RADIUS = CAMERA_POSITION[2];
 
 // Idle breathing (A.4 — DESIGN.md §6, ChatGPT round 3)
 export const BREATHING_FREQ_HZ = 1.5;
