@@ -7,9 +7,24 @@
 // Skin atlas size (Minecraft Java 1.8+ 64x64 layout)
 export const SKIN_ATLAS_SIZE = 64;
 
-// Camera (A.2 in plan inputs — ChatGPT round 4)
-export const CAMERA_POSITION: readonly [number, number, number] = [0, 1.4, 3.2];
-export const CAMERA_LOOK_TARGET: readonly [number, number, number] = [0, 1.2, 0];
+// Camera (A.2 in plan inputs — ChatGPT round 4, reframed for full-body shot)
+//
+// Original ChatGPT spec: position (0, 1.4, 3.2), target (0, 1.2, 0), FOV 32°.
+// That framed an upper-torso shot — it clipped the arms and legs on the
+// 1.85-unit-tall humanoid. At FOV 32°, vertical extent visible at distance D
+// is `2·D·tan(16°)`. For D=3.2, extent ≈ 1.83 — exactly the model height,
+// zero margin. Worse, look-target Y=1.2 put the frame's bottom around Y=0.4,
+// cutting legs (Y=0–0.65) entirely.
+//
+// Reframed to full-body shot:
+//   D=4.5 → vertical extent ≈ 2.58 units (~0.7 units margin around the model)
+//   Target Y=0.9 centers vertically on the model's midpoint
+//
+// Lesson for future spec consultations: pass the model's bounding-box
+// dimensions in the prompt. ChatGPT's round-4 response assumed a shorter
+// subject than our actual humanoid.
+export const CAMERA_POSITION: readonly [number, number, number] = [0, 1.4, 4.5];
+export const CAMERA_LOOK_TARGET: readonly [number, number, number] = [0, 0.9, 0];
 export const CAMERA_FOV = 32;
 
 // Idle micro-orbit (A.3 — ChatGPT round 4)
@@ -17,7 +32,7 @@ export const CAMERA_FOV = 32;
 export const IDLE_ORBIT_START_SEC = 0.5;
 export const IDLE_ORBIT_PERIOD_SEC = 9; // midpoint of 8-10s spec
 export const IDLE_ORBIT_AMPLITUDE_RAD = 0.0524; // 3° in radians
-export const IDLE_ORBIT_RADIUS = 3.2; // matches CAMERA_POSITION[2]
+export const IDLE_ORBIT_RADIUS = 4.5; // must match CAMERA_POSITION[2]
 
 // Idle breathing (A.4 — DESIGN.md §6, ChatGPT round 3)
 export const BREATHING_FREQ_HZ = 1.5;
