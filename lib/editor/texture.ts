@@ -74,6 +74,16 @@ export class TextureManager {
   }
 
   /**
+   * The underlying offscreen canvas. ViewportUV mounts this element into
+   * its DOM tree so the 2D display is the same pixel buffer the 3D side
+   * samples from — no redundant blits. CSS `transform: scale()` + `image-
+   * rendering: pixelated` on a wrapper provides zoom without re-drawing.
+   */
+  getCanvas(): HTMLCanvasElement {
+    return this.canvas;
+  }
+
+  /**
    * Clear the offscreen canvas and blit each visible layer's pixel buffer.
    * For M3 with a single layer this is a single putImageData call. M6
    * extends to honoring `opacity` and `blendMode` per layer.
