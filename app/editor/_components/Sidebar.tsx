@@ -1,0 +1,139 @@
+'use client';
+
+import type { BrushSize, SavingState } from '@/lib/editor/store';
+import { useEditorStore } from '@/lib/editor/store';
+import type { SkinVariant } from '@/lib/editor/types';
+import { ColorPicker } from './ColorPicker';
+import { Toolbar } from './Toolbar';
+
+export function Sidebar({ className }: { className?: string }) {
+  return (
+    <div
+      className={`flex h-full w-full flex-col gap-4 overflow-y-auto p-4 ${className ?? ''}`}
+    >
+      <ToolbarRow />
+      <VariantToggle />
+      <BrushSizeRadio />
+      <ColorPicker className="flex-1" />
+      <SavingStatusChip />
+    </div>
+  );
+}
+
+// ============================================================================
+// Toolbar row
+// ============================================================================
+
+function ToolbarRow() {
+  return <Toolbar />;
+}
+
+// ============================================================================
+// Variant toggle — Classic / Slim segmented control
+// ============================================================================
+
+const VARIANTS: { id: SkinVariant; label: string }[] = [
+  { id: 'classic', label: 'Classic' },
+  { id: 'slim', label: 'Slim' },
+];
+
+function VariantToggle() {
+  const variant = useEditorStore((s) => s.variant);
+  const setVariant = useEditorStore((s) => s.setVariant);
+
+  return (
+    <div
+      role="group"
+      aria-label="Skin variant"
+      className="flex gap-1"
+    >
+      {VARIANTS.map(({ id, label }) => {
+        const pressed = variant === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            aria-pressed={pressed}
+            onClick={() => setVariant(id)}
+            className={`flex-1 rounded-sm border border-ui-border bg-ui-base px-2 py-1 font-mono text-sm text-text-primary hover:border-accent/60 disabled:opacity-50 ${
+              pressed ? 'border-accent' : ''
+            }`}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================================
+// Brush size radio — 4 buttons
+// ============================================================================
+
+const BRUSH_SIZES: BrushSize[] = [1, 2, 3, 4];
+
+function BrushSizeRadio() {
+  const brushSize = useEditorStore((s) => s.brushSize);
+  const setBrushSize = useEditorStore((s) => s.setBrushSize);
+
+  return (
+    <div
+      role="group"
+      aria-label="Brush size"
+      className="flex gap-1"
+    >
+      {BRUSH_SIZES.map((n) => {
+        const pressed = brushSize === n;
+        return (
+          <button
+            key={n}
+            type="button"
+            aria-pressed={pressed}
+            onClick={() => setBrushSize(n)}
+            className={`flex-1 rounded-sm border border-ui-border bg-ui-base px-2 py-1 font-mono text-sm text-text-primary hover:border-accent/60 disabled:opacity-50 ${
+              pressed ? 'border-accent' : ''
+            }`}
+          >
+            {n}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================================
+// Saving status chip
+// ============================================================================
+
+const SAVING_CONFIG: Record<
+  SavingState,
+  { label: string; dotClass: string }
+> = {
+  pending: { label: 'Saving\u2026', dotClass: 'bg-text-secondary' },
+  enabled: { label: 'Saving', dotClass: 'bg-green-500' },
+  'disabled:private': {
+    label: 'Saving disabled (Private Browsing)',
+    dotClass: 'bg-red-500',
+  },
+  'disabled:quota': {
+    label: 'Saving disabled (storage full)',
+    dotClass: 'bg-red-500',
+  },
+};
+
+function SavingStatusChip() {
+  const savingState = useEditorStore((s) => s.savingState);
+  const { label, dotClass } = SAVING_CONFIG[savingState];
+
+  return (
+    <div className="mt-auto flex items-center gap-2 pt-2">
+      <span
+        aria-hidden="true"
+        className={`h-2 w-2 flex-shrink-0 rounded-full ${dotClass}`}
+      />
+      <span className="font-mono text-xs text-text-secondary">{label}</span>
+    </div>
+  );
+}
