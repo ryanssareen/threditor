@@ -71,7 +71,10 @@ export function EditorLayout() {
       }
 
       if (!cancelled) {
-        persistenceCleanup = initPersistence({ getLayer: () => layerRef.current });
+        persistenceCleanup = initPersistence({
+          getLayer: () => layerRef.current,
+          createdAt: doc?.createdAt,
+        });
       }
     })();
 
