@@ -46,7 +46,8 @@ export type SavingState =
   | 'pending'
   | 'enabled'
   | 'disabled:private'
-  | 'disabled:quota';
+  | 'disabled:quota'
+  | 'disabled:error';
 
 export type EditorState = {
   // Model
