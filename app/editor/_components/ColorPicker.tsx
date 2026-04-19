@@ -197,14 +197,18 @@ const HUE_GRADIENT =
   'linear-gradient(to right, hsl(0,100%,50%), hsl(60,100%,50%), hsl(120,100%,50%), hsl(180,100%,50%), hsl(240,100%,50%), hsl(300,100%,50%), hsl(360,100%,50%))';
 
 /**
- * Hue control. Subscribes to ONLY activeColor.h — the amendment-3 test
- * pins that this subcomponent does not re-render when a hue-preserving
- * change (e.g., SL drag at fixed hue, hex input whose HSL has same h)
- * updates activeColor.
+ * Hue control. Subscribes to ONLY activeColor.h — amendment 3's
+ * regression test pins that this subcomponent does not re-render
+ * when a hue-preserving change (e.g., SL drag at fixed hue, hex input
+ * whose HSL has same h) updates activeColor.
+ *
+ * The interaction callbacks read the full activeColor via
+ * useEditorStore.getState() — that call does NOT subscribe, so adding
+ * it here doesn't re-introduce the re-render on unrelated activeColor
+ * changes.
  */
 export function HueRing() {
   const h = useEditorStore((s) => s.activeColor.h);
-  const activeColor = useEditorStore((s) => s.activeColor);
   const setActiveColor = useEditorStore((s) => s.setActiveColor);
 
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -216,9 +220,10 @@ export function HueRing() {
       if (bar === null) return;
       const rect = bar.getBoundingClientRect();
       const nextH = clampHue(((clientX - rect.left) / rect.width) * 360);
-      setActiveColor(handleHueDrag(activeColor, nextH));
+      const current = useEditorStore.getState().activeColor;
+      setActiveColor(handleHueDrag(current, nextH));
     },
-    [activeColor, setActiveColor],
+    [setActiveColor],
   );
 
   const onPointerDown = useCallback(
@@ -252,9 +257,10 @@ export function HueRing() {
       else if (e.key === 'ArrowRight') next += step;
       else return;
       e.preventDefault();
-      setActiveColor(handleHueDrag(activeColor, clampHue(next)));
+      const current = useEditorStore.getState().activeColor;
+      setActiveColor(handleHueDrag(current, clampHue(next)));
     },
-    [h, activeColor, setActiveColor],
+    [h, setActiveColor],
   );
 
   return (
