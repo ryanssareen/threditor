@@ -16,20 +16,24 @@
 // updates increment only when React actually re-runs the render
 // function for that component.
 //
+// Why no `act()` wrapping: Zustand state updates happen outside the
+// React render tree, and `createRoot().render(...)` + `root.unmount()`
+// flush synchronously. Wrapping in `act` is only needed to silence
+// React's dev-mode "not wrapped in act" warnings, which do not affect
+// test correctness. React 19's production bundle doesn't expose
+// `React.act` at all; RTL's compat layer calls into it and fails.
+// Avoiding `act` sidesteps the whole bundle-condition resolution
+// problem and keeps the test assertion-focused.
+//
 // Note the `.test.ts` extension despite the JSX: vitest / esbuild
 // accept JSX in .ts files when the caller writes tsx shapes (we use
 // React.createElement directly to avoid needing a .tsx file and the
 // plugin-react wiring).
 
 import { createElement, Profiler, type ProfilerOnRenderCallback } from 'react';
-import { act } from '@testing-library/react';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
-
-beforeAll(() => {
-  // React 18+ needs this flag for act() to behave silently.
-  (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-});
+import { flushSync } from 'react-dom';
 
 import {
   ColorPicker,
@@ -45,13 +49,13 @@ function mount(tree: React.ReactNode): void {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => {
+  flushSync(() => {
     root!.render(tree);
   });
 }
 
 function unmount(): void {
-  act(() => {
+  flushSync(() => {
     root?.unmount();
   });
   if (container !== null) document.body.removeChild(container);
@@ -78,11 +82,10 @@ describe('ColorPicker selector contract (amendment 3)', () => {
       if (id === 'HueRing') hueRenderCount += 1;
     };
 
-    // Seed a known activeColor with h=0 (pure red family).
-    act(() => {
-      useEditorStore.setState({
-        activeColor: pickerStateFromHex('#ff0000')!,
-      });
+    // Seed a known activeColor with h=0 (pure red family) before mount
+    // so the initial commit reflects the intended state.
+    useEditorStore.setState({
+      activeColor: pickerStateFromHex('#ff0000')!,
     });
 
     mount(
@@ -106,7 +109,7 @@ describe('ColorPicker selector contract (amendment 3)', () => {
     // with rgb 255,128,128 yields h=0.)
     expect(Math.round(nextSameHue.h)).toBe(Math.round(0));
 
-    act(() => {
+    flushSync(() => {
       useEditorStore.setState({ activeColor: nextSameHue });
     });
 
@@ -121,10 +124,8 @@ describe('ColorPicker selector contract (amendment 3)', () => {
       if (id === 'HueRing') hueRenderCount += 1;
     };
 
-    act(() => {
-      useEditorStore.setState({
-        activeColor: pickerStateFromHex('#ff0000')!, // h=0
-      });
+    useEditorStore.setState({
+      activeColor: pickerStateFromHex('#ff0000')!, // h=0
     });
 
     mount(
@@ -136,7 +137,7 @@ describe('ColorPicker selector contract (amendment 3)', () => {
     );
     expect(hueRenderCount).toBe(1);
 
-    act(() => {
+    flushSync(() => {
       useEditorStore.setState({
         activeColor: pickerStateFromHex('#00ff00')!, // h=120
       });
@@ -163,7 +164,7 @@ describe('ColorPicker selector contract (amendment 3)', () => {
     // brushSize mutation: nothing inside the ColorPicker subtree reads
     // brushSize, so the Profiler at the ColorPicker root should not see
     // any additional commit.
-    act(() => {
+    flushSync(() => {
       useEditorStore.setState({ brushSize: 2 });
     });
 

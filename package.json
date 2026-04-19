@@ -13,7 +13,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "NODE_ENV=development vitest run"
   },
   "dependencies": {
     "@react-three/drei": "10.7.7",
