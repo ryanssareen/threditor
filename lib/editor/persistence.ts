@@ -1,5 +1,3 @@
-'use client';
-
 /**
  * M3: IndexedDB-backed auto-save.
  *
