@@ -4,6 +4,7 @@ import { Canvas } from '@react-three/fiber';
 import { useEffect, useState } from 'react';
 import { CanvasTexture, NearestFilter } from 'three';
 
+import { useEditorStore } from '@/lib/editor/store';
 import {
   CAMERA_FOV,
   CAMERA_LOOK_TARGET,
@@ -24,6 +25,10 @@ import { createPlaceholderSkinDataURL } from '@/lib/three/placeholder-skin';
  * `img.onload` exits early before it can touch disposed GPU state — protects
  * against rapid Classic↔Slim toggling where the new effect runs before the
  * previous Image has decoded.
+ *
+ * NOTE: M3 Step 4 replaces this with `TextureManager` (lib/editor/texture.ts).
+ * This hook stays intact through the step-3 commit so variant hoisting can
+ * land independently of the texture-manager introduction.
  */
 function usePlaceholderTexture(variant: SkinVariant): CanvasTexture | null {
   const [texture, setTexture] = useState<CanvasTexture | null>(null);
@@ -70,7 +75,10 @@ function usePlaceholderTexture(variant: SkinVariant): CanvasTexture | null {
 }
 
 export function EditorCanvas() {
-  const [variant, setVariant] = useState<SkinVariant>('classic');
+  // Narrow selector — EditorCanvas only re-renders when `variant` changes.
+  // Do NOT broaden to `useEditorStore(state => state)` — see store.ts design
+  // notes (2) for the re-render contract M3 Step 11's regression test pins.
+  const variant = useEditorStore((state) => state.variant);
   const texture = usePlaceholderTexture(variant);
 
   return (
@@ -91,17 +99,13 @@ export function EditorCanvas() {
         {texture !== null && <PlayerModel texture={texture} variant={variant} />}
       </Canvas>
 
-      <button
-        type="button"
-        data-testid="variant-toggle"
-        data-variant={variant}
-        aria-label={`Skin variant: ${variant}. Click to toggle.`}
-        aria-pressed={variant === 'slim'}
-        onClick={() => setVariant((v) => (v === 'classic' ? 'slim' : 'classic'))}
-        className="absolute right-4 top-4 rounded-md border border-ui-border bg-ui-surface px-4 py-2 font-mono text-sm text-text-primary hover:border-accent"
-      >
-        Variant: {variant}
-      </button>
+      {/*
+        The variant toggle button moved out of EditorCanvas in M3 Step 3.
+        M3 Step 10's Sidebar re-surfaces it alongside the color picker and
+        toolbar. During the step-3..step-10 window, flip `variant` via
+        `useEditorStore.setState({ variant: 'slim' })` in devtools if you
+        need to visually test both arm widths.
+      */}
     </div>
   );
 }
