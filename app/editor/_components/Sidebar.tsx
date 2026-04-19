@@ -47,6 +47,7 @@ function VariantToggle() {
             key={id}
             type="button"
             aria-pressed={pressed}
+            data-testid={`variant-${id}`}
             onClick={() => setVariant(id)}
             className={`flex-1 rounded-sm border border-ui-border bg-ui-base px-2 py-1 font-mono text-sm text-text-primary hover:border-accent/60 disabled:opacity-50 ${
               pressed ? 'border-accent' : ''
@@ -83,6 +84,7 @@ function BrushSizeRadio() {
             key={n}
             type="button"
             aria-pressed={pressed}
+            data-testid={`brush-size-${n}`}
             onClick={() => setBrushSize(n)}
             className={`flex-1 rounded-sm border border-ui-border bg-ui-base px-2 py-1 font-mono text-sm text-text-primary hover:border-accent/60 disabled:opacity-50 ${
               pressed ? 'border-accent' : ''
