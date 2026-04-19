@@ -1,3 +1,5 @@
+import { describe, expect, it } from 'vitest';
+
 import {
   contrastRatio,
   hexToRgb,
@@ -7,25 +9,6 @@ import {
   rgbToHsl,
 } from '../lib/color/conversions';
 import type { HSL, RGB } from '../lib/color/conversions';
-
-type Expectation<T> = {
-  toBe(expected: T): void;
-  toBeCloseTo(expected: number, precision?: number): void;
-  toBeGreaterThanOrEqual(expected: number): void;
-  toBeLessThan(expected: number): void;
-  toBeLessThanOrEqual(expected: number): void;
-  toBeNull(): void;
-  toEqual(expected: unknown): void;
-};
-
-type VitestApi = {
-  describe(name: string, fn: () => void): void;
-  expect<T>(actual: T): Expectation<T>;
-  it(name: string, fn: () => void): void;
-};
-
-const loadVitest = Function('return import("vitest")') as () => Promise<VitestApi>;
-const { describe, expect, it } = await loadVitest();
 
 const RGB_TOLERANCE = 1;
 const HUE_TOLERANCE = 1;
