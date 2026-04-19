@@ -106,9 +106,11 @@ export function floodFill(
   const stack: number[] = [seedX, seedY];
 
   while (stack.length > 0) {
+    // Guard against corrupt stack (each entry is an [x, y] pair).
+    if (stack.length < 2) break;
     // Pop y before x (LIFO push order is x then y).
-    const y = stack.pop() as number;
-    const x = stack.pop() as number;
+    const y = stack.pop()!;
+    const x = stack.pop()!;
 
     const rowBase = y * W;
 
