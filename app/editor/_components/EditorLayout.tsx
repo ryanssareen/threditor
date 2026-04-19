@@ -65,7 +65,10 @@ export function EditorLayout() {
           bundle.layer.pixels.set(saved.pixels);
           bundle.textureManager.composite([bundle.layer]);
         }
-        if (doc.variant !== variant) {
+        if (
+          (doc.variant === 'classic' || doc.variant === 'slim') &&
+          doc.variant !== variant
+        ) {
           useEditorStore.setState({ variant: doc.variant });
         }
       }
