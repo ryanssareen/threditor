@@ -38,6 +38,11 @@ export function EditorLayout() {
   const layerRef = useRef(bundle?.layer ?? null);
   layerRef.current = bundle?.layer ?? null;
 
+  // markDirty is threaded as a prop to ViewportUV so the persistence
+  // singleton is not module-scope. Starts as a no-op during hydration;
+  // updated to the real closure once initPersistence returns.
+  const markDirtyRef = useRef<() => void>(() => {});
+
   // Hydrate from IndexedDB then install persistence — sequenced so that
   // initPersistence cannot fire a write with blank pixels before the saved
   // doc is copied into the layer. A race between the probe completing and
@@ -74,16 +79,19 @@ export function EditorLayout() {
       }
 
       if (!cancelled) {
-        persistenceCleanup = initPersistence({
+        const { markDirty, cleanup } = initPersistence({
           getLayer: () => layerRef.current,
           createdAt: doc?.createdAt,
         });
+        markDirtyRef.current = markDirty;
+        persistenceCleanup = cleanup;
       }
     })();
 
     return () => {
       cancelled = true;
       persistenceCleanup?.();
+      markDirtyRef.current = () => {};
     };
     // layerRef is stable; bundle change triggers a fresh hydrate pass.
     // variant intentionally excluded — we hydrate once per bundle (which
@@ -106,6 +114,7 @@ export function EditorLayout() {
           <ViewportUV
             textureManager={bundle.textureManager}
             layer={bundle.layer}
+            markDirty={() => markDirtyRef.current()}
             className="h-full w-full"
           />
         ) : null}

@@ -11,7 +11,7 @@ vi.mock('idb-keyval', () => ({
   get: (k: string) => getSpy(k),
 }));
 
-import { initPersistence, loadDocument, markDocumentDirty } from '../lib/editor/persistence';
+import { initPersistence, loadDocument } from '../lib/editor/persistence';
 import { useEditorStore } from '../lib/editor/store';
 import type { Layer, SkinDocument } from '../lib/editor/types';
 
@@ -49,7 +49,7 @@ describe('persistence', () => {
   it('probe success transitions savingState from pending to enabled', async () => {
     setSpy.mockResolvedValue(undefined);
 
-    const cleanup = initPersistence({ getLayer: () => mockLayer });
+    const { cleanup } = initPersistence({ getLayer: () => mockLayer });
 
     // Flush the probe IIFE microtask chain.
     await Promise.resolve();
@@ -65,7 +65,7 @@ describe('persistence', () => {
   it('probe failure transitions savingState from pending to disabled:private', async () => {
     setSpy.mockRejectedValue(new Error('IDB unavailable'));
 
-    const cleanup = initPersistence({ getLayer: () => mockLayer });
+    const { cleanup } = initPersistence({ getLayer: () => mockLayer });
 
     await Promise.resolve();
     await Promise.resolve();
@@ -77,7 +77,7 @@ describe('persistence', () => {
 
   // ── 3. Write dropped during 'pending' until probe resolves ─────────────
 
-  it('markDocumentDirty during probe does not call set until probe resolves', async () => {
+  it('markDirty during probe does not call set until probe resolves', async () => {
     vi.useFakeTimers();
 
     // We need to control when the probe resolves. Use a deferred promise.
@@ -85,10 +85,10 @@ describe('persistence', () => {
     const probeGate = new Promise<void>((res) => { resolveProbe = res; });
     setSpy.mockImplementation(() => probeGate);
 
-    initPersistence({ getLayer: () => mockLayer });
+    const { markDirty } = initPersistence({ getLayer: () => mockLayer });
 
-    // Call markDocumentDirty before the probe has had a chance to resolve.
-    markDocumentDirty();
+    // Call markDirty before the probe has had a chance to resolve.
+    markDirty();
 
     // Advance timers well past DEBOUNCE_MS to confirm no extra set fired yet.
     await vi.advanceTimersByTimeAsync(600);
@@ -132,7 +132,7 @@ describe('persistence', () => {
       return Promise.reject({ name: 'QuotaExceededError' });
     });
 
-    const cleanup = initPersistence({ getLayer: () => mockLayer });
+    const { markDirty, cleanup } = initPersistence({ getLayer: () => mockLayer });
 
     // Let the probe resolve.
     await Promise.resolve();
@@ -140,7 +140,7 @@ describe('persistence', () => {
     expect(useEditorStore.getState().savingState).toBe('enabled');
 
     // Trigger a document write.
-    markDocumentDirty();
+    markDirty();
     await vi.advanceTimersByTimeAsync(600);
 
     // Let the rejected write's catch handler run.
@@ -159,7 +159,7 @@ describe('persistence', () => {
 
     const removeListenerSpy = vi.spyOn(window, 'removeEventListener');
 
-    const cleanup = initPersistence({ getLayer: () => mockLayer });
+    const { cleanup } = initPersistence({ getLayer: () => mockLayer });
 
     // Let probe settle so state is clean.
     await Promise.resolve();
@@ -205,13 +205,13 @@ describe('persistence', () => {
     expect(result).toBeNull();
   });
 
-  // ── Edge: cleanup resets _scheduleWrite so markDocumentDirty is a no-op ─
+  // ── Edge: markDirty after cleanup is a no-op (disposed flag) ────────────
 
-  it('markDocumentDirty after cleanup does not schedule a new set call', async () => {
+  it('markDirty after cleanup does not schedule a new set call', async () => {
     vi.useFakeTimers();
     setSpy.mockResolvedValue(undefined);
 
-    const cleanup = initPersistence({ getLayer: () => mockLayer });
+    const { markDirty, cleanup } = initPersistence({ getLayer: () => mockLayer });
 
     // Let probe resolve.
     await Promise.resolve();
@@ -219,8 +219,8 @@ describe('persistence', () => {
 
     cleanup();
 
-    // markDocumentDirty after cleanup should be a no-op.
-    markDocumentDirty();
+    // markDirty after cleanup should be a no-op (disposed flag set).
+    markDirty();
     await vi.advanceTimersByTimeAsync(600);
     await Promise.resolve();
 
@@ -243,9 +243,9 @@ describe('persistence', () => {
 
     // SCENARIO A: initPersistence installed BEFORE hydration.
     // The probe completes, then a write fires with blank pixels.
-    const cleanupA = initPersistence({ getLayer: () => layer });
+    const { markDirty: markDirtyA, cleanup: cleanupA } = initPersistence({ getLayer: () => layer });
     await Promise.resolve(); await Promise.resolve(); // probe settles → 'enabled'
-    markDocumentDirty();
+    markDirtyA();
     await vi.advanceTimersByTimeAsync(600);
     await Promise.resolve();
     const docA = setSpy.mock.calls.find((c) => c[0] === 'skin-editor:m3-document')?.[1] as { layers: { pixels: Uint8ClampedArray }[] } | undefined;
@@ -258,9 +258,9 @@ describe('persistence', () => {
 
     // SCENARIO B: hydrate first, THEN install initPersistence.
     layer.pixels[0] = 42; // simulate hydrated pixel
-    const cleanupB = initPersistence({ getLayer: () => layer });
+    const { markDirty: markDirtyB, cleanup: cleanupB } = initPersistence({ getLayer: () => layer });
     await Promise.resolve(); await Promise.resolve(); // probe settles → 'enabled'
-    markDocumentDirty();
+    markDirtyB();
     await vi.advanceTimersByTimeAsync(600);
     await Promise.resolve();
     const docB = setSpy.mock.calls.find((c) => c[0] === 'skin-editor:m3-document')?.[1] as { layers: { pixels: Uint8ClampedArray }[] } | undefined;
@@ -276,14 +276,14 @@ describe('persistence', () => {
     vi.useFakeTimers();
     setSpy.mockResolvedValue(undefined);
 
-    const cleanup = initPersistence({ getLayer: () => null });
+    const { markDirty, cleanup } = initPersistence({ getLayer: () => null });
 
     // Let probe resolve → savingState: enabled.
     await Promise.resolve();
     await Promise.resolve();
     expect(useEditorStore.getState().savingState).toBe('enabled');
 
-    markDocumentDirty();
+    markDirty();
     await vi.advanceTimersByTimeAsync(600);
     await Promise.resolve();
 
