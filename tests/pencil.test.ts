@@ -97,7 +97,8 @@ describe('pencil', () => {
 
   it('edge clamping at (0,0) with size=4: raw top-left (-1,-1) clamps to (0,0)', () => {
     const pixels = makePixels();
-    const bbox = stampPencil(pixels, 0, 0, 4, 255, 0, 0, 255);
+    const bbox = { x: 0, y: 0, w: 0, h: 0 };
+    stampPencil(pixels, 0, 0, 4, 255, 0, 0, 255, bbox);
 
     expect(bbox.x).toBe(0);
     expect(bbox.y).toBe(0);
@@ -107,7 +108,8 @@ describe('pencil', () => {
 
   it('edge clamping at x=63 with size=4: raw bottom-right (64,64) clamps to (63,63)', () => {
     const pixels = makePixels();
-    const bbox = stampPencil(pixels, 62, 62, 4, 255, 0, 0, 255);
+    const bbox = { x: 0, y: 0, w: 0, h: 0 };
+    stampPencil(pixels, 62, 62, 4, 255, 0, 0, 255, bbox);
 
     expect(bbox.x).toBe(61);
     expect(bbox.y).toBe(61);
@@ -115,10 +117,12 @@ describe('pencil', () => {
     expect(bbox.h).toBe(3);
   });
 
-  it('returned bbox reflects only the drawn region post-clamp, not logical region', () => {
+  it('outBbox reflects only the drawn region post-clamp, not logical region', () => {
     const pixels = makePixels();
-    const bboxClamped = stampPencil(pixels, 0, 0, 4, 255, 0, 0, 255);
-    const bboxFull = stampPencil(pixels, 5, 5, 4, 255, 0, 0, 255);
+    const bboxClamped = { x: 0, y: 0, w: 0, h: 0 };
+    const bboxFull = { x: 0, y: 0, w: 0, h: 0 };
+    stampPencil(pixels, 0, 0, 4, 255, 0, 0, 255, bboxClamped);
+    stampPencil(pixels, 5, 5, 4, 255, 0, 0, 255, bboxFull);
 
     expect(bboxClamped.w).toBeLessThan(4);
     expect(bboxFull.w).toBe(4);
@@ -127,7 +131,8 @@ describe('pencil', () => {
 
   it('stampLine draws bresenham pixels between (2,2) and (5,5)', () => {
     const pixels = makePixels();
-    const bbox = stampLine(pixels, 2, 2, 5, 5, 1, 255, 0, 0, 255);
+    const bbox = { x: 0, y: 0, w: 0, h: 0 };
+    stampLine(pixels, 2, 2, 5, 5, 1, 255, 0, 0, 255, bbox);
 
     expect(isColor(pixels, 2, 2, 255, 0, 0, 255)).toBe(true);
     expect(isColor(pixels, 3, 3, 255, 0, 0, 255)).toBe(true);
@@ -143,12 +148,26 @@ describe('pencil', () => {
   it('stampLine with start === end behaves like a single stampPencil', () => {
     const pixelsLine = makePixels();
     const pixelsStamp = makePixels();
+    const bboxLine = { x: 0, y: 0, w: 0, h: 0 };
+    const bboxStamp = { x: 0, y: 0, w: 0, h: 0 };
 
-    const bboxLine = stampLine(pixelsLine, 10, 10, 10, 10, 1, 0, 200, 100, 255);
-    const bboxStamp = stampPencil(pixelsStamp, 10, 10, 1, 0, 200, 100, 255);
+    stampLine(pixelsLine, 10, 10, 10, 10, 1, 0, 200, 100, 255, bboxLine);
+    stampPencil(pixelsStamp, 10, 10, 1, 0, 200, 100, 255, bboxStamp);
 
     expect(bboxLine).toEqual(bboxStamp);
     expect(pixelsLine).toEqual(pixelsStamp);
+  });
+
+  it('independent outBbox objects do not share state across two stampPencil calls', () => {
+    const pixels = makePixels();
+    const bbox1 = { x: 0, y: 0, w: 0, h: 0 };
+    const bbox2 = { x: 0, y: 0, w: 0, h: 0 };
+    stampPencil(pixels, 0, 0, 4, 255, 0, 0, 255, bbox1);
+    stampPencil(pixels, 5, 5, 1, 255, 0, 0, 255, bbox2);
+    // bbox1 must not be mutated by the second call
+    expect(bbox1.w).toBe(3);
+    expect(bbox2.x).toBe(5);
+    expect(bbox2.w).toBe(1);
   });
 
   it('stampLine with size=2 fills gaps on diagonal: (0,0) to (4,4) has no holes', () => {
