@@ -1,5 +1,3 @@
-'use client';
-
 /**
  * M3: shared TextureManager + Layer lifecycle hook.
  *
