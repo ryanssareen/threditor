@@ -2,72 +2,56 @@
 
 import { Canvas } from '@react-three/fiber';
 import { useEffect, useState } from 'react';
-import { CanvasTexture, NearestFilter } from 'three';
+import { type Texture } from 'three';
 
+import { TextureManager } from '@/lib/editor/texture';
 import { useEditorStore } from '@/lib/editor/store';
+import type { Layer, SkinVariant } from '@/lib/editor/types';
 import {
   CAMERA_FOV,
   CAMERA_LOOK_TARGET,
   CAMERA_POSITION,
 } from '@/lib/three/constants';
 import { PlayerModel } from '@/lib/three/PlayerModel';
-import { type SkinVariant } from '@/lib/three/geometry';
-import { createPlaceholderSkinDataURL } from '@/lib/three/placeholder-skin';
+import { createPlaceholderSkinPixels } from '@/lib/three/placeholder-skin';
 
 /**
- * Build a nearest-filtered CanvasTexture from a placeholder data URL.
- *
- * Runs in useEffect (client-only) so the module does not reference `document`
- * during SSR / static prerender.
- *
- * Cancellation: on variant change, the effect cleanup sets `cancelled = true`,
- * nulls out the Image handlers, and disposes the old texture. Any still-pending
- * `img.onload` exits early before it can touch disposed GPU state — protects
- * against rapid Classic↔Slim toggling where the new effect runs before the
- * previous Image has decoded.
- *
- * NOTE: M3 Step 4 replaces this with `TextureManager` (lib/editor/texture.ts).
- * This hook stays intact through the step-3 commit so variant hoisting can
- * land independently of the texture-manager introduction.
+ * Build the initial M3 document as a single "base" layer whose pixels are
+ * the placeholder skin for the given variant. M6 will grow this into a
+ * multi-layer document with an `activeLayerId` and a Zustand-held layer
+ * stack; for M3 the single-layer case lives inside EditorCanvas.
  */
-function usePlaceholderTexture(variant: SkinVariant): CanvasTexture | null {
-  const [texture, setTexture] = useState<CanvasTexture | null>(null);
+function buildInitialLayer(variant: SkinVariant): Layer {
+  return {
+    id: 'base',
+    name: 'Base',
+    visible: true,
+    opacity: 1,
+    blendMode: 'normal',
+    pixels: createPlaceholderSkinPixels(variant),
+  };
+}
+
+/**
+ * Own a TextureManager + a single M3 Layer for the given variant. Rebuilds
+ * both on variant change and disposes the old TextureManager per the M2
+ * caller-owned GPU resource contract (docs/solutions/performance-issues/
+ * r3f-geometry-prop-disposal-2026-04-18.md).
+ *
+ * Returns the three.js Texture that PlayerModel consumes. M4 extends this
+ * by exposing the TextureManager instance itself to ViewportUV so pencil
+ * stamps can write through TextureManager.getContext() + markDirty().
+ */
+function useTextureManager(variant: SkinVariant): Texture | null {
+  const [texture, setTexture] = useState<Texture | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    const dataURL = createPlaceholderSkinDataURL(variant);
-    const canvas = document.createElement('canvas');
-    canvas.width = 64;
-    canvas.height = 64;
-    const tex = new CanvasTexture(canvas);
-    tex.magFilter = NearestFilter;
-    tex.minFilter = NearestFilter;
-    tex.generateMipmaps = false;
-
-    const img = new Image();
-    img.onload = () => {
-      if (cancelled) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.imageSmoothingEnabled = false;
-      ctx.clearRect(0, 0, 64, 64);
-      ctx.drawImage(img, 0, 0);
-      tex.needsUpdate = true;
-    };
-    img.onerror = () => {
-      if (cancelled) return;
-      // Placeholder skin should never fail to decode (data URL built from
-      // Canvas.toDataURL in-process), but surface it if it ever does.
-      console.error('placeholder-skin: image failed to load for variant', variant);
-    };
-    img.src = dataURL;
-
-    setTexture(tex);
+    const tm = new TextureManager();
+    const layer = buildInitialLayer(variant);
+    tm.composite([layer]);
+    setTexture(tm.getTexture());
     return () => {
-      cancelled = true;
-      img.onload = null;
-      img.onerror = null;
-      tex.dispose();
+      tm.dispose();
     };
   }, [variant]);
 
@@ -76,10 +60,9 @@ function usePlaceholderTexture(variant: SkinVariant): CanvasTexture | null {
 
 export function EditorCanvas() {
   // Narrow selector — EditorCanvas only re-renders when `variant` changes.
-  // Do NOT broaden to `useEditorStore(state => state)` — see store.ts design
-  // notes (2) for the re-render contract M3 Step 11's regression test pins.
+  // See lib/editor/store.ts design notes (2).
   const variant = useEditorStore((state) => state.variant);
-  const texture = usePlaceholderTexture(variant);
+  const texture = useTextureManager(variant);
 
   return (
     <div className="relative h-dvh w-dvw">
@@ -100,11 +83,10 @@ export function EditorCanvas() {
       </Canvas>
 
       {/*
-        The variant toggle button moved out of EditorCanvas in M3 Step 3.
-        M3 Step 10's Sidebar re-surfaces it alongside the color picker and
-        toolbar. During the step-3..step-10 window, flip `variant` via
-        `useEditorStore.setState({ variant: 'slim' })` in devtools if you
-        need to visually test both arm widths.
+        Variant toggle moved out of EditorCanvas in M3 Step 3 and is
+        re-surfaced by the Sidebar in Step 10. During the step-3..step-10
+        window, flip via `useEditorStore.setState({ variant: 'slim' })`
+        in devtools if you need to visually test both arm widths.
       */}
     </div>
   );
