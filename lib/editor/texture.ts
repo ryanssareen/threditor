@@ -40,6 +40,7 @@ export class TextureManager {
   private dirty = false;
   private rafHandle: number | null = null;
   private disposed = false;
+  private cachedImageData: ImageData | null = null;
 
   constructor(canvas?: HTMLCanvasElement, ctx?: CanvasRenderingContext2D) {
     this.canvas = canvas ?? document.createElement('canvas');
@@ -112,6 +113,26 @@ export class TextureManager {
    * rate — the rAF tick coalesces multiple dirty flips into one GPU upload.
    */
   markDirty(): void {
+    this.dirty = true;
+  }
+
+  /**
+   * Hot-path canvas update: copies `layer.pixels` into a pre-allocated
+   * ImageData (one heap allocation on first call; zero allocations on every
+   * subsequent call) and flushes to ctx. Use this in pointer-down/move
+   * handlers. Call composite() once at pointer-up for the authoritative
+   * multi-layer blit.
+   */
+  flushLayer(layer: Layer): void {
+    if (this.cachedImageData === null) {
+      this.cachedImageData = new ImageData(
+        new Uint8ClampedArray(SKIN_ATLAS_SIZE * SKIN_ATLAS_SIZE * 4),
+        SKIN_ATLAS_SIZE,
+        SKIN_ATLAS_SIZE,
+      );
+    }
+    this.cachedImageData.data.set(layer.pixels);
+    this.ctx.putImageData(this.cachedImageData, 0, 0);
     this.dirty = true;
   }
 
