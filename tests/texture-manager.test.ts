@@ -181,4 +181,46 @@ describe('TextureManager', () => {
     tm.dispose();
     expect(() => tm.markDirty()).not.toThrow();
   });
+
+  it('flushLayer() calls putImageData on each call without clearRect', () => {
+    const ctx = createMockCtx();
+    const putSpy = vi.fn();
+    const clearSpy = vi.fn();
+    ctx.putImageData = putSpy;
+    ctx.clearRect = clearSpy;
+    const tm = new TextureManager(createMockCanvas(), ctx);
+    const pixels = new Uint8ClampedArray(64 * 64 * 4);
+    const layer: Layer = {
+      id: 'test', name: 'test', visible: true, opacity: 1, blendMode: 'normal', pixels,
+    };
+
+    tm.flushLayer(layer);
+    tm.flushLayer(layer);
+    tm.flushLayer(layer);
+
+    expect(putSpy).toHaveBeenCalledTimes(3);
+    // flushLayer must NOT call clearRect — composite() owns the full clear+blit cycle
+    expect(clearSpy).not.toHaveBeenCalled();
+    tm.dispose();
+  });
+
+  it('flushLayer() reuses the same ImageData across calls (cached allocation)', () => {
+    const ctx = createMockCtx();
+    const seenImageDataInstances = new Set<object>();
+    ctx.putImageData = (imageData: ImageData) => {
+      seenImageDataInstances.add(imageData);
+    };
+    const tm = new TextureManager(createMockCanvas(), ctx);
+    const pixels = new Uint8ClampedArray(64 * 64 * 4);
+    const layer: Layer = {
+      id: 'test', name: 'test', visible: true, opacity: 1, blendMode: 'normal', pixels,
+    };
+
+    tm.flushLayer(layer);
+    tm.flushLayer(layer);
+    tm.flushLayer(layer);
+
+    expect(seenImageDataInstances.size).toBe(1);
+    tm.dispose();
+  });
 });

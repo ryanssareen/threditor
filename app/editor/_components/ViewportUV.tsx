@@ -192,7 +192,7 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
       const b =
         (hexDigit(hex, 5) << 4) | hexDigit(hex, 6);
       stampPencil(layer.pixels, atlas.ax, atlas.ay, brushSize, r, g, b);
-      textureManager.composite([layer]);
+      textureManager.flushLayer(layer);
       // Per A.2: recents inserts on FIRST pixel painted in a stroke.
       commitToRecents(activeColor.hex);
     },
@@ -254,7 +254,7 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
       );
       lastPaintedXRef.current = atlas.ax;
       lastPaintedYRef.current = atlas.ay;
-      textureManager.composite([layer]);
+      textureManager.flushLayer(layer);
     },
     [
       setUvPan,
@@ -264,6 +264,7 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
       layer,
       brushSize,
       textureManager,
+      setHoverPixel,
     ],
   );
 
@@ -272,10 +273,13 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
     panOriginRef.current = null;
     paintingRef.current = false;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    // One debounced persistence flush per completed stroke. Skipped on
-    // pan release so idle zoom/pan doesn't spam writes.
-    if (wasPainting) markDocumentDirty();
-  }, []);
+    if (wasPainting) {
+      // Authoritative multi-layer composite at stroke end. During the stroke
+      // flushLayer() keeps the canvas up to date with zero per-move allocs.
+      textureManager.composite([layer]);
+      markDocumentDirty();
+    }
+  }, [textureManager, layer]);
 
   const cursor = isSpaceHeld ? 'grab' : cursorForTool(activeTool);
   const showGrid = uvZoom >= GRID_THRESHOLD;
@@ -306,7 +310,6 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
         layer={layer}
         zoom={uvZoom}
         pan={uvPan}
-        frameRef={frameRef}
         hoverPixel={hoverPixel}
       />
       {showGrid ? (
