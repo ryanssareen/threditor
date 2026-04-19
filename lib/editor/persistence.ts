@@ -19,15 +19,14 @@
  *     close. Per amendment 2 this is BEST-EFFORT — see inline comment
  *     before the handler.
  *
- * Usage (call once from EditorLayout):
+ * Usage (call once from EditorLayout, after loadDocument settles):
  *
- *   useEffect(() => {
- *     const cleanup = initPersistence({ getLayer: () => bundle?.layer ?? null });
- *     return cleanup;
- *   }, [bundle]);
+ *   const { markDirty, cleanup } = initPersistence({ getLayer, createdAt });
+ *   // thread markDirty as a prop to ViewportUV
+ *   return cleanup;
  *
- * ViewportUV calls `markDocumentDirty()` after each committed stroke to
- * trigger the debounced save path.
+ * ViewportUV calls markDirty() after each committed stroke to trigger
+ * the debounced save path.
  */
 
 import { get, set } from 'idb-keyval';
@@ -38,14 +37,6 @@ import type { Layer, SkinDocument } from './types';
 const DOC_KEY = 'skin-editor:m3-document';
 const PROBE_KEY = 'skin-editor:storage-probe';
 const DEBOUNCE_MS = 500;
-
-// Module-scope hook that ViewportUV (and M5 tool commits) call into.
-// Installed by `initPersistence`, restored to a no-op on cleanup.
-let _scheduleWrite: () => void = () => {};
-
-export function markDocumentDirty(): void {
-  _scheduleWrite();
-}
 
 export type InitPersistenceParams = {
   /**
@@ -63,7 +54,12 @@ export type InitPersistenceParams = {
   createdAt?: number;
 };
 
-export type InitPersistenceReturn = () => void;
+export type InitPersistenceReturn = {
+  /** Schedule a debounced IDB write. Call after each committed stroke. */
+  markDirty: () => void;
+  /** Tear down subscriptions, timers, and listeners. */
+  cleanup: () => void;
+};
 
 export function initPersistence({
   getLayer,
@@ -136,10 +132,6 @@ export function initPersistence({
     }, DEBOUNCE_MS);
   };
 
-  // Install the module-scope hook so ViewportUV can fire stroke-commit
-  // signals without importing the closure directly.
-  _scheduleWrite = scheduleWrite;
-
   // ── Safari-Private probe + persist() request (amendments 5 + §D.4) ──
   (async () => {
     try {
@@ -190,15 +182,16 @@ export function initPersistence({
     window.addEventListener('beforeunload', onBeforeUnload);
   }
 
-  return (): void => {
+  const cleanup = (): void => {
     disposed = true;
     unsubscribe();
     if (debounceHandle !== null) clearTimeout(debounceHandle);
     if (typeof window !== 'undefined') {
       window.removeEventListener('beforeunload', onBeforeUnload);
     }
-    _scheduleWrite = () => {};
   };
+
+  return { markDirty: scheduleWrite, cleanup };
 }
 
 /**

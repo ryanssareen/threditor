@@ -21,7 +21,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { SKIN_ATLAS_SIZE } from '@/lib/three/constants';
-import { markDocumentDirty } from '@/lib/editor/persistence';
 import { useEditorStore } from '@/lib/editor/store';
 import { stampLine, stampPencil } from '@/lib/editor/tools/pencil';
 import type { Layer } from '@/lib/editor/types';
@@ -37,10 +36,11 @@ const GRID_THRESHOLD = 4;
 type Props = {
   textureManager: TextureManager;
   layer: Layer;
+  markDirty: () => void;
   className?: string;
 };
 
-export function ViewportUV({ textureManager, layer, className }: Props) {
+export function ViewportUV({ textureManager, layer, markDirty, className }: Props) {
   // Narrow subscriptions — each one re-renders ViewportUV only when its
   // own slice changes. Pointer-move writes never hit the store.
   const activeTool = useEditorStore((s) => s.activeTool);
@@ -277,9 +277,9 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
       // Authoritative multi-layer composite at stroke end. During the stroke
       // flushLayer() keeps the canvas up to date with zero per-move allocs.
       textureManager.composite([layer]);
-      markDocumentDirty();
+      markDirty();
     }
-  }, [textureManager, layer]);
+  }, [textureManager, layer, markDirty]);
 
   const cursor = isSpaceHeld ? 'grab' : cursorForTool(activeTool);
   const showGrid = uvZoom >= GRID_THRESHOLD;
