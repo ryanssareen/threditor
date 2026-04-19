@@ -54,12 +54,20 @@ export type InitPersistenceParams = {
    * freshest pixels at flush time via this getter.
    */
   getLayer: () => Layer | null;
+  /**
+   * Original `createdAt` from the loaded document, if any. When provided,
+   * every subsequent write preserves this timestamp so the document's
+   * creation date is stable across sessions. When absent (new document),
+   * the first write uses `Date.now()`.
+   */
+  createdAt?: number;
 };
 
 export type InitPersistenceReturn = () => void;
 
 export function initPersistence({
   getLayer,
+  createdAt,
 }: InitPersistenceParams): InitPersistenceReturn {
   const { setSavingState } = useEditorStore.getState();
   let debounceHandle: ReturnType<typeof setTimeout> | null = null;
@@ -75,7 +83,7 @@ export function initPersistence({
       variant,
       layers: [layer],
       activeLayerId: layer.id,
-      createdAt: now,
+      createdAt: createdAt ?? now,
       updatedAt: now,
     };
   };
