@@ -69,6 +69,24 @@ function partColor(part: PlayerPart): string {
 }
 
 /**
+ * Paint the placeholder rectangles onto a caller-provided 2D context.
+ * Shared by both public exports. Assumes the canvas is already sized
+ * to SKIN_ATLAS_SIZE × SKIN_ATLAS_SIZE and the context has the right
+ * config (clear + imageSmoothingEnabled = false).
+ */
+function paintPlaceholderOnContext(
+  ctx: CanvasRenderingContext2D,
+  variant: SkinVariant,
+): void {
+  const rects = variant === 'classic' ? CLASSIC_PART_RECTS : SLIM_PART_RECTS;
+  for (const [part, list] of Object.entries(rects) as Array<[PlayerPart, Rect[]]>) {
+    for (const rect of list) {
+      fillRect(ctx, rect, partColor(part));
+    }
+  }
+}
+
+/**
  * Generate a placeholder skin PNG data URL.
  * Pure function, no DOM side effects beyond the offscreen canvas it allocates
  * and drops. Callable at module init or inside a React component.
@@ -84,12 +102,31 @@ export function createPlaceholderSkinDataURL(variant: SkinVariant): string {
   ctx.clearRect(0, 0, SKIN_ATLAS_SIZE, SKIN_ATLAS_SIZE);
   ctx.imageSmoothingEnabled = false;
 
-  const rects = variant === 'classic' ? CLASSIC_PART_RECTS : SLIM_PART_RECTS;
-  for (const [part, list] of Object.entries(rects) as Array<[PlayerPart, Rect[]]>) {
-    for (const rect of list) {
-      fillRect(ctx, rect, partColor(part));
-    }
-  }
+  paintPlaceholderOnContext(ctx, variant);
 
   return canvas.toDataURL('image/png');
+}
+
+/**
+ * Generate the placeholder pixels as a 16384-byte Uint8ClampedArray
+ * (64 × 64 × 4 RGBA, top-left origin). Shape matches `Layer.pixels` so
+ * TextureManager can consume it directly via `composite([layer])`.
+ *
+ * Pure function, no DOM side effects beyond the offscreen canvas it
+ * allocates and drops. Callable only on the client — `document` access
+ * is required.
+ */
+export function createPlaceholderSkinPixels(variant: SkinVariant): Uint8ClampedArray {
+  const canvas = document.createElement('canvas');
+  canvas.width = SKIN_ATLAS_SIZE;
+  canvas.height = SKIN_ATLAS_SIZE;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('placeholder-skin: 2D context unavailable');
+
+  ctx.clearRect(0, 0, SKIN_ATLAS_SIZE, SKIN_ATLAS_SIZE);
+  ctx.imageSmoothingEnabled = false;
+
+  paintPlaceholderOnContext(ctx, variant);
+
+  return ctx.getImageData(0, 0, SKIN_ATLAS_SIZE, SKIN_ATLAS_SIZE).data;
 }
