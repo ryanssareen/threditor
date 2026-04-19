@@ -21,11 +21,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { SKIN_ATLAS_SIZE } from '@/lib/three/constants';
+import { markDocumentDirty } from '@/lib/editor/persistence';
 import { useEditorStore } from '@/lib/editor/store';
 import { stampLine, stampPencil } from '@/lib/editor/tools/pencil';
 import type { Layer } from '@/lib/editor/types';
 import type { TextureManager } from '@/lib/editor/texture';
 import { cursorForTool } from './BrushCursor';
+import { BucketHoverOverlay } from './BucketHoverOverlay';
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 16;
@@ -52,6 +54,11 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
 
   // Local state that should NOT trigger re-renders of other consumers.
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
+  // Bucket hover preview — only updated when activeTool === 'bucket' so the
+  // M3 pencil path does not pay a per-move re-render cost. Activates via
+  // devtools `useEditorStore.setState({ activeTool: 'bucket' })` in M3;
+  // M5 enables the button.
+  const [hoverPixel, setHoverPixel] = useState<{ x: number; y: number } | null>(null);
 
   // Hot-path refs (zero-allocation invariant).
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -212,6 +219,12 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
         });
         return;
       }
+      // Bucket hover preview: only update hoverPixel state when the bucket
+      // tool is active. M3 pencil path never hits this branch.
+      if (activeTool === 'bucket') {
+        const atlasHover = pointerToAtlas(e.clientX, e.clientY);
+        setHoverPixel(atlasHover !== null ? { x: atlasHover.ax, y: atlasHover.ay } : null);
+      }
       if (!paintingRef.current) return;
       const atlas = pointerToAtlas(e.clientX, e.clientY);
       if (atlas === null) return;
@@ -245,6 +258,7 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
     },
     [
       setUvPan,
+      activeTool,
       pointerToAtlas,
       activeColor.hex,
       layer,
@@ -254,9 +268,13 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
   );
 
   const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const wasPainting = paintingRef.current;
     panOriginRef.current = null;
     paintingRef.current = false;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    // One debounced persistence flush per completed stroke. Skipped on
+    // pan release so idle zoom/pan doesn't spam writes.
+    if (wasPainting) markDocumentDirty();
   }, []);
 
   const cursor = isSpaceHeld ? 'grab' : cursorForTool(activeTool);
@@ -282,6 +300,14 @@ export function ViewportUV({ textureManager, layer, className }: Props) {
           width: SKIN_ATLAS_SIZE,
           height: SKIN_ATLAS_SIZE,
         }}
+      />
+      {/* Bucket hover preview (M3-inert; activates via devtools). */}
+      <BucketHoverOverlay
+        layer={layer}
+        zoom={uvZoom}
+        pan={uvPan}
+        frameRef={frameRef}
+        hoverPixel={hoverPixel}
       />
       {showGrid ? (
         <div
