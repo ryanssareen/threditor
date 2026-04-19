@@ -1,5 +1,5 @@
-import { EditorCanvas } from './_components/EditorCanvas';
+import { EditorLayout } from './_components/EditorLayout';
 
 export default function EditorPage() {
-  return <EditorCanvas />;
+  return <EditorLayout />;
 }
