@@ -22,7 +22,7 @@
 // plugin-react wiring).
 
 import { createElement, Profiler, type ProfilerOnRenderCallback } from 'react';
-import { act } from 'react';
+import { act } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 
