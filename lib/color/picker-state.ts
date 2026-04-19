@@ -48,7 +48,7 @@ export function pickerStateFromHex(hex: string): PickerState | null {
   const rgb = hexToRgb(hex);
   if (rgb === null) return null;
   const [h, s, l] = rgbToHsl(rgb[0], rgb[1], rgb[2]);
-  return { h, s, l, hex: hex.toLowerCase() };
+  return { h, s, l, hex: rgbToHex(rgb[0], rgb[1], rgb[2]) };
 }
 
 /**

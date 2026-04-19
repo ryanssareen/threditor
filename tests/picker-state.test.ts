@@ -39,6 +39,12 @@ describe('picker-state', () => {
     expect(state!.hex).toBe('#ff00ff');
   });
 
+  it('pickerStateFromHex — shorthand #fff expands to canonical #ffffff', () => {
+    const state = pickerStateFromHex('#fff');
+    expect(state).not.toBeNull();
+    expect(state!.hex).toBe('#ffffff');
+  });
+
   it('pickerStateFromHSL — happy path (pure red from h=0,s=1,l=0.5)', () => {
     const state = pickerStateFromHSL(0, 1, 0.5);
     expect(state.hex).toBe('#ff0000');
