@@ -18,13 +18,6 @@
 import { SKIN_ATLAS_SIZE } from '../../three/constants';
 
 // ---------------------------------------------------------------------------
-// Internal helpers — module-level to avoid per-call allocations
-// ---------------------------------------------------------------------------
-
-/** Reusable bbox accumulator for stampLine. Mutated in place each call. */
-const _unionBbox = { x: 0, y: 0, w: 0, h: 0 };
-
-// ---------------------------------------------------------------------------
 // stampPencil
 // ---------------------------------------------------------------------------
 
@@ -33,13 +26,10 @@ const _unionBbox = { x: 0, y: 0, w: 0, h: 0 };
  * Writes directly into `pixels` (Uint8ClampedArray, RGBA, length 16384,
  * top-left origin, row-major). Clamps to the atlas bounds [0, 64).
  *
- * Returns the bounding box of the mutated region so the caller (ViewportUV)
- * can build a Stroke diff record for the undo stack (M6) without re-scanning
- * the whole canvas.
- *
- * Zero allocations in the hot path — this is called from the pointer event
- * handler that may fire at >60Hz. No new arrays, no object literals beyond
- * the single returned bbox.
+ * When `outBbox` is provided it is mutated in place with the bounding box
+ * of the drawn region — use this from stampLine's inner loop so no per-pixel
+ * object is allocated. Callers that need the bbox for the M6 undo stack
+ * should pre-allocate one `{ x, y, w, h }` object and reuse it across calls.
  *
  * Centering convention (matches Aseprite/Photopea for even sizes):
  *   size=1  → 1×1 at (cx, cy)
@@ -56,7 +46,8 @@ export function stampPencil(
   g: number,
   b: number,
   a?: number,
-): { x: number; y: number; w: number; h: number } {
+  outBbox?: { x: number; y: number; w: number; h: number },
+): void {
   const alpha = a !== undefined ? a : 255;
 
   // For size N: halfLeft = floor(N/2). This gives:
@@ -120,7 +111,12 @@ export function stampPencil(
     }
   }
 
-  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  if (outBbox !== undefined) {
+    outBbox.x = x0;
+    outBbox.y = y0;
+    outBbox.w = x1 - x0;
+    outBbox.h = y1 - y0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -130,10 +126,11 @@ export function stampPencil(
 /**
  * Bresenham between two pointer positions to fill the gap when pointermove
  * fires faster than once per pixel. Stamps pencil at every integer coord
- * on the line from (x0, y0) to (x1, y1) inclusive. Returns the union bbox
- * of all stamps.
+ * on the line from (x0, y0) to (x1, y1) inclusive.
  *
- * Zero allocations beyond the single returned bbox.
+ * When `outBbox` is provided it is mutated in place with the union bbox of
+ * all stamps. One local bbox object is allocated per call (not per pixel)
+ * and reused in the inner loop — no module-level mutable state.
  */
 export function stampLine(
   pixels: Uint8ClampedArray,
@@ -146,9 +143,8 @@ export function stampLine(
   g: number,
   b: number,
   a?: number,
-): { x: number; y: number; w: number; h: number } {
-  // Initialize union bbox to sentinel values that will be overwritten on the
-  // first stamp. Using ±Infinity keeps the hot-path min/max calls branchless.
+  outBbox?: { x: number; y: number; w: number; h: number },
+): void {
   let uX0 = SKIN_ATLAS_SIZE;
   let uY0 = SKIN_ATLAS_SIZE;
   let uX1 = 0;
@@ -163,14 +159,18 @@ export function stampLine(
   let px = x0;
   let py = y0;
 
-  while (true) {
-    const stamp = stampPencil(pixels, px, py, size, r, g, b, a);
+  // One bbox object per stampLine call, reused across all inner stampPencil
+  // calls — eliminates the per-pixel allocation the old return-value path had.
+  const localBbox = { x: 0, y: 0, w: 0, h: 0 };
 
-    if (stamp.w > 0 && stamp.h > 0) {
-      if (stamp.x < uX0) uX0 = stamp.x;
-      if (stamp.y < uY0) uY0 = stamp.y;
-      const ex = stamp.x + stamp.w;
-      const ey = stamp.y + stamp.h;
+  while (true) {
+    stampPencil(pixels, px, py, size, r, g, b, a, localBbox);
+
+    if (localBbox.w > 0 && localBbox.h > 0) {
+      if (localBbox.x < uX0) uX0 = localBbox.x;
+      if (localBbox.y < uY0) uY0 = localBbox.y;
+      const ex = localBbox.x + localBbox.w;
+      const ey = localBbox.y + localBbox.h;
       if (ex > uX1) uX1 = ex;
       if (ey > uY1) uY1 = ey;
     }
@@ -188,19 +188,17 @@ export function stampLine(
     }
   }
 
-  // If no pixels were mutated (e.g. line entirely outside atlas bounds),
-  // return a zero-area bbox at the origin rather than the sentinel values.
-  if (uX0 > uX1 || uY0 > uY1) {
-    _unionBbox.x = 0;
-    _unionBbox.y = 0;
-    _unionBbox.w = 0;
-    _unionBbox.h = 0;
-  } else {
-    _unionBbox.x = uX0;
-    _unionBbox.y = uY0;
-    _unionBbox.w = uX1 - uX0;
-    _unionBbox.h = uY1 - uY0;
+  if (outBbox !== undefined) {
+    if (uX0 > uX1 || uY0 > uY1) {
+      outBbox.x = 0;
+      outBbox.y = 0;
+      outBbox.w = 0;
+      outBbox.h = 0;
+    } else {
+      outBbox.x = uX0;
+      outBbox.y = uY0;
+      outBbox.w = uX1 - uX0;
+      outBbox.h = uY1 - uY0;
+    }
   }
-
-  return _unionBbox;
 }
