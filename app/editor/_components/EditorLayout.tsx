@@ -38,46 +38,52 @@ export function EditorLayout() {
   const layerRef = useRef(bundle?.layer ?? null);
   layerRef.current = bundle?.layer ?? null;
 
-  // Hydrate from IndexedDB on mount (best-effort; ignored if no doc
-  // saved, or on Safari Private where the probe will flip savingState
-  // to 'disabled:private').
+  // Hydrate from IndexedDB then install persistence — sequenced so that
+  // initPersistence cannot fire a write with blank pixels before the saved
+  // doc is copied into the layer. A race between the probe completing and
+  // loadDocument returning is prevented by not installing persistence at all
+  // until after loadDocument settles.
   useEffect(() => {
     if (bundle === null) return;
     let cancelled = false;
+    let persistenceCleanup: (() => void) | undefined;
+
     (async () => {
       const doc = await loadDocument();
-      if (cancelled || doc === null) return;
-      // Restore: copy the saved pixels into the current Layer and
-      // recomposite. We avoid swapping Layer objects because that would
-      // tear down / rebuild the TextureManager unnecessarily.
-      const saved = doc.layers[0];
-      if (
-        saved !== undefined &&
-        saved.pixels instanceof Uint8ClampedArray &&
-        saved.pixels.length === bundle.layer.pixels.length
-      ) {
-        bundle.layer.pixels.set(saved.pixels);
-        bundle.textureManager.composite([bundle.layer]);
+      if (cancelled) return;
+
+      if (doc !== null) {
+        // Restore: copy the saved pixels into the current Layer and
+        // recomposite. We avoid swapping Layer objects because that would
+        // tear down / rebuild the TextureManager unnecessarily.
+        const saved = doc.layers[0];
+        if (
+          saved !== undefined &&
+          saved.pixels instanceof Uint8ClampedArray &&
+          saved.pixels.length === bundle.layer.pixels.length
+        ) {
+          bundle.layer.pixels.set(saved.pixels);
+          bundle.textureManager.composite([bundle.layer]);
+        }
+        if (doc.variant !== variant) {
+          useEditorStore.setState({ variant: doc.variant });
+        }
       }
-      if (doc.variant !== variant) {
-        useEditorStore.setState({ variant: doc.variant });
+
+      if (!cancelled) {
+        persistenceCleanup = initPersistence({ getLayer: () => layerRef.current });
       }
     })();
+
     return () => {
       cancelled = true;
+      persistenceCleanup?.();
     };
     // layerRef is stable; bundle change triggers a fresh hydrate pass.
     // variant intentionally excluded — we hydrate once per bundle (which
     // already changes on variant) and otherwise let the save path
     // persist the new variant naturally.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bundle]);
-
-  // Install persistence once per bundle lifecycle.
-  useEffect(() => {
-    if (bundle === null) return;
-    const cleanup = initPersistence({ getLayer: () => layerRef.current });
-    return cleanup;
   }, [bundle]);
 
   return (

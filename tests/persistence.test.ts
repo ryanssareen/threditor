@@ -229,6 +229,47 @@ describe('persistence', () => {
     expect(setSpy.mock.calls[0][0]).toBe('skin-editor:storage-probe');
   });
 
+  // ── Sequencing: initPersistence installed after hydration cannot overwrite ─
+
+  it('write triggered before layer hydration captures blank pixels; after hydration captures saved pixels', async () => {
+    vi.useFakeTimers();
+    setSpy.mockResolvedValue(undefined);
+
+    // Simulate a layer that starts blank then gets hydrated.
+    const layer: Layer = {
+      id: 'test', name: 'test', visible: true, opacity: 1, blendMode: 'normal',
+      pixels: new Uint8ClampedArray(64 * 64 * 4), // all zeros = blank
+    };
+
+    // SCENARIO A: initPersistence installed BEFORE hydration.
+    // The probe completes, then a write fires with blank pixels.
+    const cleanupA = initPersistence({ getLayer: () => layer });
+    await Promise.resolve(); await Promise.resolve(); // probe settles → 'enabled'
+    markDocumentDirty();
+    await vi.advanceTimersByTimeAsync(600);
+    await Promise.resolve();
+    const docA = setSpy.mock.calls.find((c) => c[0] === 'skin-editor:m3-document')?.[1] as { layers: { pixels: Uint8ClampedArray }[] } | undefined;
+    // All pixels are blank because hydration hasn't happened yet.
+    expect(docA?.layers[0]?.pixels.every((v: number) => v === 0)).toBe(true);
+    cleanupA();
+    useEditorStore.setState({ savingState: 'pending' });
+    setSpy.mockReset();
+    setSpy.mockResolvedValue(undefined);
+
+    // SCENARIO B: hydrate first, THEN install initPersistence.
+    layer.pixels[0] = 42; // simulate hydrated pixel
+    const cleanupB = initPersistence({ getLayer: () => layer });
+    await Promise.resolve(); await Promise.resolve(); // probe settles → 'enabled'
+    markDocumentDirty();
+    await vi.advanceTimersByTimeAsync(600);
+    await Promise.resolve();
+    const docB = setSpy.mock.calls.find((c) => c[0] === 'skin-editor:m3-document')?.[1] as { layers: { pixels: Uint8ClampedArray }[] } | undefined;
+    // First pixel reflects the hydrated value.
+    expect(docB?.layers[0]?.pixels[0]).toBe(42);
+    cleanupB();
+    useEditorStore.setState({ savingState: 'pending' });
+  });
+
   // ── Edge: getLayer returning null skips the write ─────────────────────
 
   it('attemptWrite is a no-op when getLayer returns null', async () => {
