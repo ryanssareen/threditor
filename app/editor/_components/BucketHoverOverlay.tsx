@@ -15,7 +15,6 @@ type Props = {
   layer: Layer;
   zoom: number;
   pan: { x: number; y: number };
-  frameRef: React.RefObject<HTMLDivElement | null>;
   hoverPixel: { x: number; y: number } | null;
 };
 
