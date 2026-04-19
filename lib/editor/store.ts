@@ -122,10 +122,11 @@ export const useEditorStore = create<EditorState>((set) => ({
   setBrushSize: (n) => set({ brushSize: n }),
 
   setActiveColor: (next) =>
-    set((prev) => ({
-      activeColor: next,
-      previousColor: prev.activeColor,
-    })),
+    set((prev) =>
+      next.hex === prev.activeColor.hex
+        ? { activeColor: next }
+        : { activeColor: next, previousColor: prev.activeColor },
+    ),
 
   swapColors: () =>
     set((prev) => ({
