@@ -90,7 +90,11 @@ export function initPersistence({
       return;
     }
     // Disabled: drop the pending write silently (amendment 5).
-    if (state === 'disabled:private' || state === 'disabled:quota') {
+    if (
+      state === 'disabled:private' ||
+      state === 'disabled:quota' ||
+      state === 'disabled:error'
+    ) {
       return;
     }
     const layer = getLayer();
@@ -105,9 +109,8 @@ export function initPersistence({
       if (errName === 'QuotaExceededError') {
         setSavingState('disabled:quota');
       } else {
-        // Unknown failure — surface to user + log.
         console.error('persistence: unexpected IDB write failure', err);
-        setSavingState('disabled:quota');
+        setSavingState('disabled:error');
       }
     }
   };

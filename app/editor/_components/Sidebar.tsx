@@ -11,7 +11,7 @@ export function Sidebar({ className }: { className?: string }) {
     <div
       className={`flex h-full w-full flex-col gap-4 overflow-y-auto p-4 ${className ?? ''}`}
     >
-      <ToolbarRow />
+      <Toolbar />
       <VariantToggle />
       <BrushSizeRadio />
       <ColorPicker className="flex-1" />
@@ -20,13 +20,6 @@ export function Sidebar({ className }: { className?: string }) {
   );
 }
 
-// ============================================================================
-// Toolbar row
-// ============================================================================
-
-function ToolbarRow() {
-  return <Toolbar />;
-}
 
 // ============================================================================
 // Variant toggle — Classic / Slim segmented control
@@ -119,6 +112,10 @@ const SAVING_CONFIG: Record<
   },
   'disabled:quota': {
     label: 'Saving disabled (storage full)',
+    dotClass: 'bg-red-500',
+  },
+  'disabled:error': {
+    label: 'Saving disabled (unexpected error)',
     dotClass: 'bg-red-500',
   },
 };
