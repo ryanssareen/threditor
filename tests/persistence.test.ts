@@ -83,7 +83,7 @@ describe('persistence', () => {
     // We need to control when the probe resolves. Use a deferred promise.
     let resolveProbe!: () => void;
     const probeGate = new Promise<void>((res) => { resolveProbe = res; });
-    setSpy.mockImplementation((_key: string) => probeGate);
+    setSpy.mockImplementation(() => probeGate);
 
     initPersistence({ getLayer: () => mockLayer });
 
