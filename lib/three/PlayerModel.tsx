@@ -52,8 +52,13 @@ import {
 } from './geometry';
 import { resolveOverlayHit } from './overlay-map';
 import { clampAtlas } from './atlas-math';
-import { hexDigit } from '@/lib/color/hex-digit';
-import { stampPencil } from '@/lib/editor/tools/pencil';
+import {
+  samplePickerAt,
+  strokeStart,
+  type StrokeContext,
+} from '@/lib/editor/tools/dispatch';
+import { useAltHeld } from '@/lib/editor/use-alt-held';
+import { pickerStateFromHex } from '@/lib/color/picker-state';
 import { useEditorStore } from '@/lib/editor/store';
 import type { Layer } from '@/lib/editor/types';
 import type { TextureManager } from '@/lib/editor/texture';
@@ -141,8 +146,12 @@ export function PlayerModel({
   const activeTool = useEditorStore((s) => s.activeTool);
   const brushSize = useEditorStore((s) => s.brushSize);
   const activeColorHex = useEditorStore((s) => s.activeColor.hex);
+  const mirrorEnabled = useEditorStore((s) => s.mirrorEnabled);
   const commitToRecents = useEditorStore((s) => s.commitToRecents);
   const setHoveredPixel = useEditorStore((s) => s.setHoveredPixel);
+  const setActiveColor = useEditorStore((s) => s.setActiveColor);
+
+  const altHeldRef = useAltHeld();
 
   // Hot-path refs (zero-alloc invariant). `paintingRef` tracks whether a
   // stroke is in progress; `lastPaintedX/Y` dedupe identical-pixel moves.
@@ -176,11 +185,11 @@ export function PlayerModel({
     }
   }, [textureManager, layer, setHoveredPixel]);
 
-  // Clear hover when tool is switched away from pencil so the lingering
-  // decal + 2D tint don't confuse the user during an M5 eraser/bucket
-  // interaction.
+  // Clear hover state when tool switches to one that doesn't show hover
+  // affordances (eraser/picker). Pencil + bucket keep the decal/tint so
+  // users see what island they're about to paint.
   useEffect(() => {
-    if (activeTool !== 'pencil') {
+    if (activeTool !== 'pencil' && activeTool !== 'bucket') {
       setHoveredPixel(null);
       lastHoverXRef.current = -1;
       lastHoverYRef.current = -1;
@@ -206,22 +215,6 @@ export function PlayerModel({
     [layer, variant],
   );
 
-  // Stamp one pixel (N×N per brushSize) at the resolved atlas coord.
-  // Inline hexDigit scalar reads per M3's zero-alloc pattern; no tuple
-  // allocation for the RGB parse.
-  const stampAt = useCallback(
-    (x: number, y: number): void => {
-      if (textureManager === undefined || layer === undefined) return;
-      const hex = activeColorHex;
-      const r = (hexDigit(hex, 1) << 4) | hexDigit(hex, 2);
-      const g = (hexDigit(hex, 3) << 4) | hexDigit(hex, 4);
-      const b = (hexDigit(hex, 5) << 4) | hexDigit(hex, 6);
-      stampPencil(layer.pixels, x, y, brushSize, r, g, b);
-      textureManager.flushLayer(layer);
-    },
-    [activeColorHex, brushSize, layer, textureManager],
-  );
-
   // ── Pointer handlers ──────────────────────────────────────────────────────
   //
   // Each mesh gets the same three handlers; the mesh's part name is carried
@@ -229,6 +222,9 @@ export function PlayerModel({
   // context. Stopping propagation on the hit mesh prevents R3F from firing
   // the same event on any mesh behind it (combined with
   // `raycaster.firstHitOnly = true` in EditorCanvas for overlap safety).
+  //
+  // M5: paint is dispatched via lib/editor/tools/dispatch.ts. The picker tool
+  // and the Alt-hold modifier sample in one shot (no capture, no stroke).
 
   const handlePointerDown = useCallback(
     (e: ThreeEvent<PointerEvent>) => {
@@ -240,7 +236,6 @@ export function PlayerModel({
       if (e.button !== 0) return;
 
       if (hydrationPending) return;
-      if (activeTool !== 'pencil') return;
       if (!e.uv) return;
       if (textureManager === undefined || layer === undefined) return;
 
@@ -249,6 +244,23 @@ export function PlayerModel({
 
       e.stopPropagation();
 
+      const rawX = clampAtlas(Math.floor(e.uv.x * SKIN_ATLAS_SIZE));
+      const rawY = clampAtlas(Math.floor((1 - e.uv.y) * SKIN_ATLAS_SIZE));
+      const isOverlay = part.endsWith('Overlay');
+      const resolved = resolveHit(rawX, rawY, isOverlay);
+
+      // Picker one-shot: sample the pixel and update the active color; no
+      // capture, no stroke. Alt-hold modifier behaves the same way.
+      const isPickerGesture = activeTool === 'picker' || altHeldRef.current;
+      if (isPickerGesture) {
+        const sample = samplePickerAt(layer, resolved.x, resolved.y);
+        if (sample !== null && sample.alpha > 0) {
+          const next = pickerStateFromHex(sample.hex);
+          if (next !== null) setActiveColor(next);
+        }
+        return;
+      }
+
       // P0 (review finding): capture the pointer on the canvas DOM element so
       // pointerup fires even if the user drags off the mesh before release.
       // Without this, R3F's pointerup dispatch requires a mesh hit at release
@@ -256,30 +268,44 @@ export function PlayerModel({
       // auto-painting on the next hover without any button held.
       (e.target as Element).setPointerCapture(e.pointerId);
 
-      const rawX = clampAtlas(Math.floor(e.uv.x * SKIN_ATLAS_SIZE));
-      const rawY = clampAtlas(Math.floor((1 - e.uv.y) * SKIN_ATLAS_SIZE));
-      const isOverlay = part.endsWith('Overlay');
-      const resolved = resolveHit(rawX, rawY, isOverlay);
+      const ctx: StrokeContext = {
+        tool: activeTool,
+        layer,
+        variant,
+        textureManager,
+        activeColorHex,
+        brushSize,
+        mirrorEnabled,
+      };
+      const changed = strokeStart(ctx, resolved.x, resolved.y);
+      if (!changed) {
+        // Bucket on a non-island seed, or unknown tool: release capture so we
+        // don't stick in a phantom painting state.
+        (e.target as Element).releasePointerCapture?.(e.pointerId);
+        return;
+      }
 
       paintingRef.current = true;
       lastPaintedXRef.current = resolved.x;
       lastPaintedYRef.current = resolved.y;
 
-      stampAt(resolved.x, resolved.y);
       markDirty?.();
-      // Recents insert: once per stroke (matches ViewportUV + M3 §A.2).
       commitToRecents(activeColorHex);
     },
     [
       hydrationPending,
       activeTool,
+      altHeldRef,
       resolveHit,
-      stampAt,
       markDirty,
       commitToRecents,
       activeColorHex,
       textureManager,
       layer,
+      variant,
+      brushSize,
+      mirrorEnabled,
+      setActiveColor,
     ],
   );
 
@@ -306,9 +332,10 @@ export function PlayerModel({
       const resolved = resolveHit(rawX, rawY, isOverlay);
 
       // Hover dispatch — dedup against last dispatched value so the store
-      // only fires when the resolved pixel changes.
+      // only fires when the resolved pixel changes. Only pencil + bucket
+      // want the 2D tint / 3D decal; eraser/picker get a plain cursor.
       if (
-        activeTool === 'pencil' &&
+        (activeTool === 'pencil' || activeTool === 'bucket') &&
         (resolved.x !== lastHoverXRef.current ||
           resolved.y !== lastHoverYRef.current ||
           resolved.target !== lastHoverTargetRef.current)
@@ -320,23 +347,46 @@ export function PlayerModel({
       }
 
       if (!paintingRef.current) return;
+      // Bucket + picker are one-shot; no drag continuation.
+      if (activeTool === 'bucket' || activeTool === 'picker') return;
       if (
         resolved.x === lastPaintedXRef.current &&
         resolved.y === lastPaintedYRef.current
       ) {
         return;
       }
+      if (textureManager === undefined || layer === undefined) return;
 
       // Per M4 plan D4: no atlas-space Bresenham on 3D. Atlas-adjacent pixels
       // are not guaranteed 3D-adjacent (e.g., head-front and head-right rects
       // aren't next to each other on atlas despite sharing a 3D edge), so a
       // naive Bresenham would paint across arbitrary intervening pixels.
-      // Per-frame sampling only; gaps on fast drags acceptable for M4.
-      stampAt(resolved.x, resolved.y);
+      // Per-frame per-pixel strokeStart reuses the dispatcher's tool routing
+      // + mirror logic; same semantic as the M4 per-frame stamp.
+      const ctx: StrokeContext = {
+        tool: activeTool,
+        layer,
+        variant,
+        textureManager,
+        activeColorHex,
+        brushSize,
+        mirrorEnabled,
+      };
+      strokeStart(ctx, resolved.x, resolved.y);
       lastPaintedXRef.current = resolved.x;
       lastPaintedYRef.current = resolved.y;
     },
-    [activeTool, resolveHit, stampAt, setHoveredPixel],
+    [
+      activeTool,
+      resolveHit,
+      setHoveredPixel,
+      textureManager,
+      layer,
+      variant,
+      activeColorHex,
+      brushSize,
+      mirrorEnabled,
+    ],
   );
 
   const handlePointerUp = useCallback((e: ThreeEvent<PointerEvent>) => {
