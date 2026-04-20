@@ -3,8 +3,6 @@ import type { ToolId } from '@/lib/editor/store';
 /**
  * Produce the CSS `cursor` string for the given tool. Callers set it as
  * an inline `style={{ cursor }}` on the 2D-canvas wrapper element.
- * Returns 'crosshair' as a safe fallback for tools that don't yet ship a
- * custom SVG (mirror, or any future tool added before its SVG lands).
  *
  * The SVGs and hot-spots are adopted verbatim from docs/plans/
  * m3-paint-canvas.md §B.2 (Gemini round 5).
@@ -19,8 +17,6 @@ export function cursorForTool(tool: ToolId): string {
       return svgCursor(PICKER_SVG, 16, 16);
     case 'bucket':
       return svgCursor(BUCKET_SVG, 10, 22);
-    case 'mirror':
-      return 'crosshair';
   }
 }
 

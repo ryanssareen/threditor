@@ -35,8 +35,13 @@ import {
 import { pickerStateFromHex, type PickerState } from '@/lib/color/picker-state';
 import type { SkinVariant } from './types';
 
-/** Tools enumerated up-front even though only 'pencil' is active in M3. */
-export type ToolId = 'pencil' | 'eraser' | 'picker' | 'bucket' | 'mirror';
+/**
+ * M5: the four paint tools. Mirror was originally scaffolded as a fifth
+ * member here but DESIGN §9 describes it as a modifier on subsequent
+ * strokes, not a tool swap — it was promoted to its own boolean slot
+ * (`mirrorEnabled`) during M5 per plan D1.
+ */
+export type ToolId = 'pencil' | 'eraser' | 'picker' | 'bucket';
 
 /** Bidirectional hover state (M4 R5/R7). Null when no pixel is hovered. */
 export type HoveredPixel = { x: number; y: number; target: 'base' | 'overlay' } | null;
@@ -74,6 +79,11 @@ export type EditorState = {
   // Hover
   hoveredPixel: HoveredPixel;
 
+  // M5 mirror modifier. Toggle flips X-axis symmetry on *subsequent*
+  // pencil/eraser/bucket strokes; picker is never mirrored. Session-local;
+  // not persisted to IDB (M6 may revisit when layer schema grows).
+  mirrorEnabled: boolean;
+
   // Persistence
   savingState: SavingState;
 
@@ -83,6 +93,8 @@ export type EditorState = {
   setBrushSize: (n: BrushSize) => void;
   setActiveColor: (next: PickerState) => void;
   swapColors: () => void;
+  setMirrorEnabled: (next: boolean) => void;
+  toggleMirror: () => void;
   /**
    * Commit a color to the recents FIFO. ONLY call when the color affected
    * pixels (pencil stroke start, bucket fill commit). Do NOT call on picker
@@ -125,6 +137,8 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   hoveredPixel: null,
 
+  mirrorEnabled: false,
+
   savingState: 'pending',
 
   setVariant: (v) => set({ variant: v }),
@@ -163,6 +177,10 @@ export const useEditorStore = create<EditorState>((set) => ({
     set((prev) =>
       prev.hoveredPixel === null && next === null ? prev : { hoveredPixel: next },
     ),
+  setMirrorEnabled: (next) =>
+    set((prev) => (prev.mirrorEnabled === next ? prev : { mirrorEnabled: next })),
+  toggleMirror: () =>
+    set((prev) => ({ mirrorEnabled: !prev.mirrorEnabled })),
   setUvZoom: (z) => set({ uvZoom: z }),
   setUvPan: (p) => set({ uvPan: p }),
   setSavingState: (s) => set({ savingState: s }),
