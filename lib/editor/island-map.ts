@@ -110,3 +110,11 @@ export function islandIdAt(map: IslandMap, x: number, y: number): IslandId {
 
 /** Total number of distinct island IDs (12 parts × 6 faces). */
 export const ISLAND_ID_COUNT = PART_ID_ORDER.length * FACE_ID_ORDER.length;
+
+/** Last ID belonging to a base (non-overlay) part (6 base parts × 6 faces = IDs 1-36). */
+export const OVERLAY_ISLAND_ID_BASE = 36;
+
+/** Returns true when `id` belongs to one of the six overlay parts (IDs 37-72). */
+export function isOverlayIsland(id: IslandId): boolean {
+  return id > OVERLAY_ISLAND_ID_BASE;
+}
