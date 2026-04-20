@@ -20,7 +20,7 @@
  * vertical stack.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { initPersistence, loadDocument } from '@/lib/editor/persistence';
 import { useEditorStore } from '@/lib/editor/store';
@@ -43,6 +43,14 @@ export function EditorLayout() {
   // updated to the real closure once initPersistence returns.
   const markDirtyRef = useRef<() => void>(() => {});
 
+  // M4 Unit 0 (P1 from M3 review): hydrationPending gates paint interaction
+  // until loadDocument() resolves. Without this gate, a user who starts
+  // painting between bundle-mount and hydrate-resolution has their fresh
+  // strokes clobbered by `bundle.layer.pixels.set(saved.pixels)` below.
+  // Flips false exactly once per bundle lifecycle; stays false for the
+  // rest of the session (hydration only happens once per variant TM).
+  const [hydrationPending, setHydrationPending] = useState(true);
+
   // Hydrate from IndexedDB then install persistence — sequenced so that
   // initPersistence cannot fire a write with blank pixels before the saved
   // doc is copied into the layer. A race between the probe completing and
@@ -52,6 +60,11 @@ export function EditorLayout() {
     if (bundle === null) return;
     let cancelled = false;
     let persistenceCleanup: (() => void) | undefined;
+
+    // Reset the gate on every bundle (i.e., on variant toggle — a new TM
+    // means a new hydrate is pending). Paint surfaces disable interaction
+    // until we flip back to false at the end of the async flow.
+    setHydrationPending(true);
 
     (async () => {
       const doc = await loadDocument();
@@ -85,6 +98,8 @@ export function EditorLayout() {
         });
         markDirtyRef.current = markDirty;
         persistenceCleanup = cleanup;
+        // Open the paint gate AFTER hydrate + persistence install complete.
+        setHydrationPending(false);
       }
     })();
 
@@ -115,6 +130,7 @@ export function EditorLayout() {
             textureManager={bundle.textureManager}
             layer={bundle.layer}
             markDirty={() => markDirtyRef.current()}
+            hydrationPending={hydrationPending}
             className="h-full w-full"
           />
         ) : null}

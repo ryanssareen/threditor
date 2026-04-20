@@ -37,10 +37,16 @@ type Props = {
   textureManager: TextureManager;
   layer: Layer;
   markDirty: () => void;
+  /**
+   * M4 Unit 0 gate: when true, pointer events early-return. Prevents the
+   * race where a user's fresh strokes get clobbered by the hydrate path's
+   * `bundle.layer.pixels.set(saved.pixels)`. EditorLayout owns this flag.
+   */
+  hydrationPending?: boolean;
   className?: string;
 };
 
-export function ViewportUV({ textureManager, layer, markDirty, className }: Props) {
+export function ViewportUV({ textureManager, layer, markDirty, hydrationPending = false, className }: Props) {
   // Narrow subscriptions — each one re-renders ViewportUV only when its
   // own slice changes. Pointer-move writes never hit the store.
   const activeTool = useEditorStore((s) => s.activeTool);
@@ -124,6 +130,20 @@ export function ViewportUV({ textureManager, layer, markDirty, className }: Prop
     return () => obs.disconnect();
   }, [setUvZoom, setUvPan]);
 
+  // M4 Unit 0 (P1 from M3 review): if the bundle (textureManager or layer)
+  // changes mid-stroke — typically via variant toggle mid-paint — reset
+  // painting state so the next pointermove does not stamp a Bresenham line
+  // across the new, blank canvas from the stale atlas coords. The state is
+  // component-local; variant toggle replaces the TextureManager prop which
+  // fires this cleanup.
+  useEffect(() => {
+    paintingRef.current = false;
+    panOriginRef.current = null;
+    lastPaintedXRef.current = -1;
+    lastPaintedYRef.current = -1;
+    setHoverPixel(null);
+  }, [textureManager, layer]);
+
   // Space-key pan modifier. Listen globally so Space works even if the
   // viewport doesn't have DOM focus.
   useEffect(() => {
@@ -206,6 +226,10 @@ export function ViewportUV({ textureManager, layer, markDirty, className }: Prop
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      // M4 Unit 0: paint events are inert while the document is still
+      // hydrating from IDB. Pan (space+drag) is NOT gated — user may
+      // explore the empty canvas while we wait.
+      if (hydrationPending && !isSpaceHeld) return;
       if (isSpaceHeld) {
         panOriginRef.current = {
           x: e.clientX - uvPan.x,
@@ -236,6 +260,7 @@ export function ViewportUV({ textureManager, layer, markDirty, className }: Prop
       commitToRecents(activeColor.hex);
     },
     [
+      hydrationPending,
       isSpaceHeld,
       uvPan.x,
       uvPan.y,
