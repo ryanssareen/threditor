@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ISLAND_ID_COUNT,
+  OVERLAY_ISLAND_ID_BASE,
   getIslandMap,
+  isOverlayIsland,
   islandIdAt,
 } from '../lib/editor/island-map';
 
@@ -34,22 +36,22 @@ describe('island-map', () => {
   //   slim arms = classic arms − (32 px × 4 faces) = 896 − 128 = 768... measured 3136
   // The tests below assert >=3000 as a lower-bound sanity check; exact counts
   // are documented above for future milestones.
-  it('classic map has at least 3000 non-zero pixels', () => {
+  it('classic map has exactly 3264 non-zero pixels', () => {
     const map = getIslandMap('classic');
     let nonZero = 0;
     for (let i = 0; i < map.length; i++) {
       if (map[i] !== 0) nonZero++;
     }
-    expect(nonZero).toBeGreaterThanOrEqual(3000);
+    expect(nonZero).toBe(3264);
   });
 
-  it('slim map has at least 3000 non-zero pixels', () => {
+  it('slim map has exactly 3136 non-zero pixels', () => {
     const map = getIslandMap('slim');
     let nonZero = 0;
     for (let i = 0; i < map.length; i++) {
       if (map[i] !== 0) nonZero++;
     }
-    expect(nonZero).toBeGreaterThanOrEqual(3000);
+    expect(nonZero).toBe(3136);
   });
 
   it('islandIdAt returns 0 for out-of-bounds coordinates on classic map', () => {
@@ -114,5 +116,48 @@ describe('island-map', () => {
     const idAt7 = islandIdAt(map, 7, 8);
     const idAt8 = islandIdAt(map, 8, 8);
     expect(idAt7).not.toBe(idAt8);
+  });
+
+  describe('isOverlayIsland', () => {
+    it('returns false for id 0 (unused)', () => {
+      expect(isOverlayIsland(0)).toBe(false);
+    });
+
+    it('returns false for id 1 (first base face)', () => {
+      expect(isOverlayIsland(1)).toBe(false);
+    });
+
+    it('returns false for id 36 (last base face, equals OVERLAY_ISLAND_ID_BASE)', () => {
+      expect(OVERLAY_ISLAND_ID_BASE).toBe(36);
+      expect(isOverlayIsland(36)).toBe(false);
+    });
+
+    it('returns true for id 37 (first overlay face)', () => {
+      expect(isOverlayIsland(37)).toBe(true);
+    });
+
+    it('returns true for id 72 (last overlay face)', () => {
+      expect(isOverlayIsland(72)).toBe(true);
+    });
+
+    it('integration: classic map base pixels (1-36) and overlay pixels (37-72) are both non-zero and together account for all painted pixels', () => {
+      const map = getIslandMap('classic');
+      let baseCount = 0;
+      let overlayCount = 0;
+      let totalNonZero = 0;
+      for (let i = 0; i < map.length; i++) {
+        const id = map[i];
+        if (id === 0) continue;
+        totalNonZero++;
+        if (isOverlayIsland(id)) {
+          overlayCount++;
+        } else {
+          baseCount++;
+        }
+      }
+      expect(baseCount).toBeGreaterThan(0);
+      expect(overlayCount).toBeGreaterThan(0);
+      expect(baseCount + overlayCount).toBe(totalNonZero);
+    });
   });
 });
