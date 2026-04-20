@@ -18,7 +18,7 @@
 
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import { type Texture } from 'three';
+import { MOUSE, TOUCH, type Texture } from 'three';
 
 import {
   CAMERA_FOV,
@@ -26,6 +26,7 @@ import {
   CAMERA_POSITION,
 } from '@/lib/three/constants';
 import { PlayerModel } from '@/lib/three/PlayerModel';
+import { CursorDecal } from './CursorDecal';
 import type { Layer, SkinVariant } from '@/lib/editor/types';
 import type { TextureManager } from '@/lib/editor/texture';
 
@@ -77,15 +78,22 @@ export function EditorCanvas({
             hydrationPending={hydrationPending}
           />
         ) : null}
+        <CursorDecal />
         {/*
-          OrbitControls: originally scoped to M8 polish but pulled forward
-          because the static 3° idle orbit doesn't let users inspect the
-          model from arbitrary angles. Configured to match the camera
-          framing so rotation pivots around the look target.
-          - enablePan: false (camera pan would fight the 2D canvas's pan)
-          - enableZoom: true (wheel zoom; acceptable since no 3D paint in M3)
-          - min/max polar: clamp so user can't flip the model upside down
-          - damping: feels responsive at 0.05 without inertia drift
+          OrbitControls pulled forward from M8 polish.
+          Gesture binding is CRITICAL here: M4 paints on left-click, so
+          OrbitControls MUST NOT take left-click. Rebind:
+            - LEFT  → null (reserved for paint pointer events on the mesh)
+            - MIDDLE → DOLLY (wheel-click pan is not useful; keep as dolly)
+            - RIGHT → ROTATE (right-click drag orbits the camera)
+          Touch:
+            - ONE finger → null (paint)
+            - TWO fingers → DOLLY_ROTATE (pinch to zoom + drag to rotate)
+          Other tuning:
+            - enablePan: false (camera pan would fight the 2D canvas pan)
+            - minDistance/maxDistance: keep model framed
+            - min/max polar: no upside-down flip
+            - damping: 0.05 responsive, no inertia drift
         */}
         <OrbitControls
           target={[
@@ -101,7 +109,17 @@ export function EditorCanvas({
           maxPolarAngle={Math.PI - Math.PI / 6}
           enableDamping
           dampingFactor={0.05}
+          mouseButtons={{
+            LEFT: null as unknown as MOUSE,
+            MIDDLE: MOUSE.DOLLY,
+            RIGHT: MOUSE.ROTATE,
+          }}
+          touches={{
+            ONE: null as unknown as TOUCH,
+            TWO: TOUCH.DOLLY_ROTATE,
+          }}
         />
+
       </Canvas>
     </div>
   );
