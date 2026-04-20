@@ -46,6 +46,27 @@ export const HEAD_BASE_Y = 1.4;
 // M2 pins this constant but does NOT consume it. First use is M3 hover rim-light.
 export const RIM_LIGHT_COLOR = 0x7fd6ff;
 
+// M4 3D paint (R6 + R4)
+// -----
+// Overlay alpha threshold: pixels with alpha < threshold in an overlay part
+// are treated as transparent → a 3D click at that UV paints the BASE layer
+// at the corresponding UV via the overlay-map LUT. Pixels with alpha ≥
+// threshold paint the overlay. Threshold = 10 on the 0-255 scale; matches
+// the PlayerModel overlay material's `alphaTest: 0.01` (≈ 2.55 / 255)
+// rounded up to user-perceptual clarity so a single click doesn't toggle
+// precedence on sub-perceptual residue.
+export const OVERLAY_ALPHA_THRESHOLD = 10;
+
+// Cursor decal (3D hover affordance) — Unit 5 consumes these.
+// World-unit baseline for the billboarded square decal. Tuned to match
+// one atlas texel's apparent size at the default camera distance; finer
+// tuning during /ce:work visual pass.
+export const CURSOR_DECAL_SIZE = 0.025;
+// Max scale bump applied to the decal when camera is far from the hit
+// point — improves visibility without bloating it at close range.
+// Per plan UX decision 1: "+10-15% at distance."
+export const CURSOR_DECAL_DISTANCE_SCALE_MAX = 1.15;
+
 // Derived (pre-computed to avoid per-frame trig setup cost)
 export const TWO_PI = Math.PI * 2;
 export const BREATHING_ANGULAR = TWO_PI * BREATHING_FREQ_HZ;
