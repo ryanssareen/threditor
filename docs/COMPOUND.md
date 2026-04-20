@@ -247,3 +247,88 @@
 - `docs/solutions/test-failures/vitest-jsdom-react-component-testing-setup-2026-04-20.md` — copy the component-test skeleton for M4's raycast hover tests.
 - `docs/solutions/performance-issues/r3f-geometry-prop-disposal-2026-04-18.md` — M4 will add raycast-hover overlay meshes; apply the same `useEffect`-dispose pattern for any new geometries / render targets.
 - This file's M3 "Gotchas for future milestones" — two P1 races (mid-stroke variant change + hydrate overwrite) are M4's first fixes. Review flagged but did not block; M4 should resolve both before adding 3D→2D raycast.
+
+## M4: 2D↔3D Paint Bridge — 2026-04-20
+
+### What worked
+
+- **Cross-AI consultation before `/ce:plan`.** UX decisions (3D cursor shape, hover affordance, overlay precedence) were locked via a pre-plan consultation; the plan itself just codified them. Result: `/ce:work` had zero UX ambiguity mid-execution. Pattern worth reusing for high-UX-surface milestones.
+- **Unit 0 as a prerequisite.** The two M3 P1 review findings (variant-mid-stroke + hydrate-overwrites-strokes) were explicit prerequisite fixes in M4's plan, landed before the 3D paint surface. Without this gate, M4's `PlayerModel` would have introduced a second `paintingRef` that could get stuck alongside `ViewportUV`'s — compound failure mode. **Pattern: escalate unresolved P1s from prior milestones into the next milestone's Unit 0.**
+- **Overlay/base LUT over per-event rect-iteration.** 8 KB module-scope trades off against 72 rect comparisons per 60-200 Hz pointer event. O(1) runtime lookup. Pattern: pre-compute any per-event lookup that has a reasonable static state space.
+- **Atlas→world helper (`lib/three/atlas-to-world.ts`).** The 6-entry face-axis transform table is now pinned as canonical — any future work that places a 3D object at a known atlas coord (M5 mirror tool, M6 layer panel hit-indicators, M7 template thumbnails) reuses it. Extracted via test-first dev because the face-axis signs are error-prone.
+- **`userData.part` on meshes instead of per-mesh handler closures.** One shared `onPointerDown`/`Move`/`Up` triple across all 12 meshes; each reads `e.object.userData.part` to decide overlay vs base. Dep-array churn minimized; closure count linear in handler-types-per-mesh, not meshes.
+- **Hover dedup refs (`lastHoverX/Y/TargetRef`) extended from M3's pointerToAtlas dedup pattern.** Store only fires when the resolved pixel actually changes. Applied symmetrically on ViewportUV and PlayerModel.
+- **Hybrid dispatch (Opus direct + Sonnet subagents parallel).** Opus on judgment-heavy files: Unit 0 (P1 safety fixes), Unit 4 (PlayerModel pointer paint core), Unit 5 (atlas-to-world math + CursorDecal 3D). Sonnet parallel on units that touch non-overlapping files: Unit 1 (island-map helper), Unit 2 (overlay-map LUT test-first), Unit 3 (hoveredPixel store slot). Unit 6 (ViewportUV hover hoist) dispatched to Sonnet serially after Unit 3 landed. Saved ~30% wall-clock vs pure-Opus.
+
+### What didn't
+
+- **drei `<Html>` JSX-inside-Billboard.** drei's `<Html>` renders DOM nodes positioned via 3D transform; nesting inside `<Billboard>` caused a minor DOM-inside-canvas positional drift on first render. Tolerable (the label settles after one frame) but worth noting: drei composable primitives aren't always transitively composable.
+- **R3F raycast tests under jsdom.** Skipped full render integration tests and fell back to pure-function tests per the plan's risk section. jsdom has no WebGL context; a real test would need Playwright or a WebGL2-mocking harness. M4 ships with 0 R3F render tests; the pure-function coverage (uv→atlas, overlay precedence, face-axis transforms) + manual acceptance is the shape.
+- **Plan estimate of overlay-pixel delta off by ~20.** Plan estimated ~80 px delta between classic and slim overlay maps; actual measured delta is 64 px (32 per arm × 2 arms). Plan double-counted some arm-base-contribution overlap. Capture: when estimating pixel counts across variants, construct the measurement, don't derive from the plan doc estimate.
+- **Texel-center snap for 3D cursor.** Plan UX decision 1 specified decal snaps to UV texel centers, not raw hit points. Implementation does snap at the texel-center via `atlasToWorld`, but the "Distance scale-up" refinement (+10-15% at distance) was deferred to M5 polish to keep Unit 5 shippable. Document the deferral so future readers know the constant is pinned but the math isn't hooked up yet.
+
+### Invariants discovered
+
+- **R3F `event.uv` Y-flip is a contract.** `e.uv.y` is bottom-up (WebGL convention); atlas is top-down. Every UV→atlas and atlas→UV conversion does `y = floor((1 - uv.y) * SIZE)` or inverse. Documented in `docs/solutions/integration-issues/r3f-pointer-paint-on-textured-mesh-2026-04-20.md` as Decision #1.
+- **`raycaster.firstHitOnly = true` + `material.side = FrontSide`** is the canonical no-bleed-through combo. Set `firstHitOnly` once on Canvas `onCreated`. `FrontSide` is the three.js default for `MeshStandardMaterial`; don't override.
+- **`userData` as the mesh-identity extension point.** `Object3D.userData` is three.js's built-in sidecar object. Doesn't break serialization (GLTF export preserves it). Cleaner than a WeakMap sidecar or a custom prop.
+- **`CanvasTexture` disposal is caller-owned.** Already documented for BoxGeometry in M2; applies identically to CanvasTextures that a client component builds and passes as a `map={…}` prop. `useMemo` build + `useEffect` dispose pattern.
+- **BoxGeometry face-axis transform table is static and worth pinning.** The 6-entry table in `atlas-to-world.ts` maps (face, uFrac, vFrac) → (x, y, z) offset given (w, h, d). Derives from three.js BoxGeometry vertex ordering: face order `[+X right, -X left, +Y top, -Y bottom, +Z front, -Z back]`, per-face vertex order `[upper-left, upper-right, lower-left, lower-right]` from outside-looking-in. If M4's `atlas-to-world.ts` ever looks wrong during manual QA, THIS is the table to re-verify against three.js source.
+- **Pre-computed Uint16Array LUT pattern.** For any mapping between discrete coordinate spaces (overlay atlas ↔ base atlas here; UV seam neighbors in potential future tools; template atlas → skin atlas in M7) where the mapping is static and the query hot: `Uint16Array(4096)` with a sentinel (`0xFFFF`) for "no mapping" is ~8 KB per map and O(1) per lookup. Beats 6× rect iteration or computed-on-demand.
+- **Zero-alloc invariant extended to 3D pointer hot paths.** M2 pinned it for `useFrame`; M3 extended to 2D pointer events; M4 extends to 3D pointer events. Rule: anywhere at 60-200 Hz, no new Vector3, no tuple-returning helpers, inline scalar hex-parse, dedup store dispatches with refs. One `{x,y,target}` object per pointer-move-dispatch is the accepted precedent (matches M3's `{ax, ay}`).
+
+### Gotchas for future milestones
+
+- **CursorDecal `CURSOR_DECAL_DISTANCE_SCALE_MAX` is pinned but unhooked.** The 1.15 constant in `constants.ts` is the max scale bump for distance-dependent cursor sizing. A `useFrame`-driven camera-distance read would hook it up. Implement in M5 or M8 polish; current M4 decal is fixed-size.
+- **M3 P2/P3 review findings still unresolved at M4 close:**
+  - `handleWheel` commits zoom+pan as two separate store sets (M3 gotcha #3). Any future subscriber reading both can see torn state. M5 should add `setUvView({zoom, pan})` atomic action.
+  - Toolbar 'b' hotkey doesn't guard `e.metaKey`/`e.ctrlKey`/`e.altKey` (M3 gotcha #4). Cmd+B triggers pencil tool selection while browser also shows bookmark dialog. One-line fix.
+  - `aria-valuetext` on `role="application"` in SL square (M3 amendment 4 lock) — M4 didn't migrate to the reviewer-suggested visually-hidden `aria-live` sibling pattern. Carry forward into M5 or M6.
+- **3D drag uses per-frame sampling only.** Fast drags across a face boundary will show gaps (~2-5 pixel gaps at normal drag speed, more at tablet-pen speed). If user feedback flags this during M4 acceptance testing, M5 gets a prerequisite "3D-space ray-stepping" unit. Atlas-space Bresenham is NOT a valid shortcut (see solution doc).
+- **Cross-surface pointer continuity is not supported.** User can't start a stroke on 2D, drag onto 3D, and release — each surface has its own `paintingRef` lifecycle. R3F `<Canvas eventSource>` hoisting could enable this but is out of scope through M8.
+- **drei `<Billboard>` + `<Html>` bundle cost is non-trivial.** M4 added exactly +5 kB First Load JS (on the +5 kB plan budget). M5/M6 adding more drei primitives should measure before committing to them. Consider `<Sprite>` with a baked `CanvasTexture` as a lighter alternative for simple 3D UI elements.
+- **Hydration gate is a UX flash risk for slow IDB.** `hydrationPending` starts true on every bundle lifecycle; normally flips false in <100 ms. On Safari Private's slow probe path or a cold IDB, the window could be perceivable (user clicks → no paint). Current UX is silent pointer-event no-op. If QA flags it, add a subtle overlay.
+- **`useRef<-1>` convention for "no last hover/paint."** The code uses `-1` as a sentinel for "no pixel hovered/painted yet" because `null` would require a union type + narrowing. Acceptable since atlas coords are `[0, 63]` and can't collide. Document the convention if it spreads further.
+
+### Pinned facts for next milestones
+
+**Exact version deltas from M3:**
+
+- No new dependencies. drei `<Billboard>` + `<Html>` are already installed via drei 10.7.7; M4 is the first consumer.
+- All M3 pins unchanged.
+
+**File paths established:**
+
+- `lib/three/overlay-map.ts` — `Uint16Array(4096)` LUT per variant; `getOverlayToBaseMap(variant)` + `overlayToBase(variant, x, y)` + `OVERLAY_NO_MAPPING = 0xFFFF`.
+- `lib/three/atlas-to-world.ts` — `atlasToWorld(variant, x, y)` + `faceNormal(face)` + `faceLocalOffset(face, u, v, w, h, d)`. The 6-entry face-axis transform table lives here.
+- `lib/editor/island-map.ts` — now exports `OVERLAY_ISLAND_ID_BASE = 36` + `isOverlayIsland(id)` predicate. IDs 1-36 are base parts, 37-72 are overlay parts.
+- `lib/editor/store.ts` — `hoveredPixel: { x, y, target: 'base' | 'overlay' } | null` slot + `setHoveredPixel` action with identity-guard on null→null.
+- `lib/three/constants.ts` — `OVERLAY_ALPHA_THRESHOLD = 10` (0-255 scale; alpha below this redirects overlay→base), `CURSOR_DECAL_SIZE = 0.025`, `CURSOR_DECAL_DISTANCE_SCALE_MAX = 1.15` (pinned, not hooked up).
+- `app/editor/_components/CursorDecal.tsx` — 3D paint cursor + BASE/OVERLAY label (drei `<Billboard>` + `<Html>`).
+- `app/editor/_components/PencilHoverOverlay.tsx` — 2D-side pencil hover preview (single-pixel 18% additive white + 1px stroke).
+- `docs/solutions/integration-issues/r3f-pointer-paint-on-textured-mesh-2026-04-20.md` — canonical R3F paint pattern.
+
+**Conventions established:**
+
+- Single `hoveredPixel` store slot drives both surfaces' hover. Producers dedup via refs; consumers subscribe with narrow selectors.
+- `hydrationPending` pattern for async-bundle paint gates: EditorLayout owns the flag, threads to every paint surface as a prop. Paint events early-return when pending; pan / non-paint events continue.
+- `useEffect([textureManager, layer])` race-reset pattern: wherever per-stroke state lives, reset it when the underlying bundle changes. Mirrored across ViewportUV and PlayerModel.
+- R3F meshes carry per-mesh identity via `userData={{ part }}`. Shared pointer handlers read `e.object.userData.*`.
+- CanvasTexture resources built via `useMemo` + disposed in `useEffect` cleanup (same rule as BoxGeometry from M2).
+
+**Bundle baseline update:**
+
+- `/editor`: 250 → **255 kB** route chunk (+5), 352 → **357 kB** First Load JS (+5, exactly at the M4 plan budget).
+- `/` (landing): 3.45 kB / 106 kB (unchanged).
+
+**Audit baseline:**
+
+- **0 vulnerabilities** (production and full).
+
+### Recommended reading for M5
+
+- `docs/solutions/integration-issues/r3f-pointer-paint-on-textured-mesh-2026-04-20.md` — M5's eraser/bucket/picker/mirror tools will all reuse this pointer paint pattern. Follow the 8-decision checklist at the top; avoid the 5 listed "didn't work" attempts.
+- `lib/three/atlas-to-world.ts` — mirror tool needs the inverse direction (world or atlas → mirrored atlas). Reuse the face-axis table.
+- `docs/solutions/performance-issues/r3f-geometry-prop-disposal-2026-04-18.md` — any new GPU resources (mirror preview mesh, picker target highlight) follow the same `useMemo + useEffect cleanup` pattern.
+- This file's M4 §Gotchas — the three unresolved M3 P2/P3 findings (handleWheel tearing, Cmd+B hotkey, SL square aria) are M5 candidates to resolve as chores.
+- This file's M4 §Invariants — the R3F Y-flip + firstHitOnly + userData + face-axis patterns are now canonical. Don't re-derive; reuse.
