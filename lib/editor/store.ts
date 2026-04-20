@@ -38,6 +38,9 @@ import type { SkinVariant } from './types';
 /** Tools enumerated up-front even though only 'pencil' is active in M3. */
 export type ToolId = 'pencil' | 'eraser' | 'picker' | 'bucket' | 'mirror';
 
+/** Bidirectional hover state (M4 R5/R7). Null when no pixel is hovered. */
+export type HoveredPixel = { x: number; y: number; target: 'base' | 'overlay' } | null;
+
 /** Brush size in pixels. Stamp is N×N centered on cursor pixel. */
 export type BrushSize = 1 | 2 | 3 | 4;
 
@@ -68,6 +71,9 @@ export type EditorState = {
   uvZoom: number;
   uvPan: { x: number; y: number };
 
+  // Hover
+  hoveredPixel: HoveredPixel;
+
   // Persistence
   savingState: SavingState;
 
@@ -83,6 +89,7 @@ export type EditorState = {
    * drag, hex typing, hover, or eyedropper sample.
    */
   commitToRecents: (hex: string) => void;
+  setHoveredPixel: (next: HoveredPixel) => void;
   setUvZoom: (z: number) => void;
   setUvPan: (p: { x: number; y: number }) => void;
   setSavingState: (s: SavingState) => void;
@@ -115,6 +122,8 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   uvZoom: 1,
   uvPan: { x: 0, y: 0 },
+
+  hoveredPixel: null,
 
   savingState: 'pending',
 
@@ -150,6 +159,10 @@ export const useEditorStore = create<EditorState>((set) => ({
       return { recentSwatches: filtered };
     }),
 
+  setHoveredPixel: (next) =>
+    set((prev) =>
+      prev.hoveredPixel === null && next === null ? prev : { hoveredPixel: next },
+    ),
   setUvZoom: (z) => set({ uvZoom: z }),
   setUvPan: (p) => set({ uvPan: p }),
   setSavingState: (s) => set({ savingState: s }),
