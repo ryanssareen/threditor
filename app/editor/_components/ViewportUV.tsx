@@ -21,10 +21,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { SKIN_ATLAS_SIZE } from '@/lib/three/constants';
-import { hexDigit } from '@/lib/color/hex-digit';
 import { useEditorStore } from '@/lib/editor/store';
 import { getIslandMap, islandIdAt, isOverlayIsland } from '@/lib/editor/island-map';
-import { stampLine, stampPencil } from '@/lib/editor/tools/pencil';
+import {
+  samplePickerAt,
+  strokeContinue,
+  strokeStart,
+  type StrokeContext,
+} from '@/lib/editor/tools/dispatch';
+import { useAltHeld } from '@/lib/editor/use-alt-held';
+import { pickerStateFromHex } from '@/lib/color/picker-state';
 import type { Layer } from '@/lib/editor/types';
 import type { TextureManager } from '@/lib/editor/texture';
 import { cursorForTool } from './BrushCursor';
@@ -61,7 +67,11 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
   const setUvPan = useEditorStore((s) => s.setUvPan);
   const commitToRecents = useEditorStore((s) => s.commitToRecents);
   const setHoveredPixel = useEditorStore((s) => s.setHoveredPixel);
+  const setActiveColor = useEditorStore((s) => s.setActiveColor);
+  const mirrorEnabled = useEditorStore((s) => s.mirrorEnabled);
   const variant = useEditorStore((s) => s.variant);
+
+  const altHeldRef = useAltHeld();
 
   // Local state that should NOT trigger re-renders of other consumers.
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
@@ -272,25 +282,43 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         return;
       }
-      if (activeTool !== 'pencil') return;
+
       const atlas = pointerToAtlas(e.clientX, e.clientY);
       if (atlas === null) return;
+
+      // Picker: one-shot sample on pointerdown (via tool choice OR Alt-hold
+      // modifier). Never enters a stroke; no capture, no paint.
+      const isPickerGesture = activeTool === 'picker' || altHeldRef.current;
+      if (isPickerGesture) {
+        const sample = samplePickerAt(layer, atlas.ax, atlas.ay);
+        if (sample !== null && sample.alpha > 0) {
+          const next = pickerStateFromHex(sample.hex);
+          if (next !== null) setActiveColor(next);
+        }
+        return;
+      }
+
+      const ctx: StrokeContext = {
+        tool: activeTool,
+        layer,
+        variant,
+        textureManager,
+        activeColorHex: activeColor.hex,
+        brushSize,
+        mirrorEnabled,
+      };
+      const changed = strokeStart(ctx, atlas.ax, atlas.ay);
+      if (!changed) return;
+
+      // paintingRef is set for every drag-capable tool so pointermove
+      // continues the stroke. Bucket is one-shot but we still take the
+      // capture + mark painting so the normal pointerup lifecycle runs
+      // composite + markDirty.
       paintingRef.current = true;
       lastPaintedXRef.current = atlas.ax;
       lastPaintedYRef.current = atlas.ay;
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 
-      // Zero-alloc: inline scalar RGB parse (no returned tuple allocation).
-      const hex = activeColor.hex;
-      const r =
-        (hexDigit(hex, 1) << 4) | hexDigit(hex, 2);
-      const g =
-        (hexDigit(hex, 3) << 4) | hexDigit(hex, 4);
-      const b =
-        (hexDigit(hex, 5) << 4) | hexDigit(hex, 6);
-      stampPencil(layer.pixels, atlas.ax, atlas.ay, brushSize, r, g, b);
-      textureManager.flushLayer(layer);
-      // Per A.2: recents inserts on FIRST pixel painted in a stroke.
       commitToRecents(activeColor.hex);
     },
     [
@@ -299,12 +327,16 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       uvPan.x,
       uvPan.y,
       activeTool,
+      altHeldRef,
       pointerToAtlas,
       activeColor.hex,
       layer,
       brushSize,
       textureManager,
       commitToRecents,
+      variant,
+      mirrorEnabled,
+      setActiveColor,
     ],
   );
 
@@ -349,6 +381,8 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
         }
       }
       if (!paintingRef.current) return;
+      // Bucket + picker are one-shot; nothing to continue.
+      if (activeTool === 'bucket' || activeTool === 'picker') return;
       const atlas = pointerToAtlas(e.clientX, e.clientY);
       if (atlas === null) return;
       if (
@@ -357,27 +391,24 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       ) {
         return;
       }
-      const hex = activeColor.hex;
-      const r =
-        (hexDigit(hex, 1) << 4) | hexDigit(hex, 2);
-      const g =
-        (hexDigit(hex, 3) << 4) | hexDigit(hex, 4);
-      const b =
-        (hexDigit(hex, 5) << 4) | hexDigit(hex, 6);
-      stampLine(
-        layer.pixels,
+      const ctx: StrokeContext = {
+        tool: activeTool,
+        layer,
+        variant,
+        textureManager,
+        activeColorHex: activeColor.hex,
+        brushSize,
+        mirrorEnabled,
+      };
+      strokeContinue(
+        ctx,
         lastPaintedXRef.current,
         lastPaintedYRef.current,
         atlas.ax,
         atlas.ay,
-        brushSize,
-        r,
-        g,
-        b,
       );
       lastPaintedXRef.current = atlas.ax;
       lastPaintedYRef.current = atlas.ay;
-      textureManager.flushLayer(layer);
     },
     [
       setUvPan,
@@ -388,6 +419,7 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       brushSize,
       textureManager,
       variant,
+      mirrorEnabled,
       setHoveredPixel,
     ],
   );
