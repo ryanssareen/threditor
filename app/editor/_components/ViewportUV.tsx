@@ -22,11 +22,13 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 import { SKIN_ATLAS_SIZE } from '@/lib/three/constants';
 import { useEditorStore } from '@/lib/editor/store';
+import { getIslandMap, islandIdAt, isOverlayIsland } from '@/lib/editor/island-map';
 import { stampLine, stampPencil } from '@/lib/editor/tools/pencil';
 import type { Layer } from '@/lib/editor/types';
 import type { TextureManager } from '@/lib/editor/texture';
 import { cursorForTool } from './BrushCursor';
 import { BucketHoverOverlay } from './BucketHoverOverlay';
+import { PencilHoverOverlay } from './PencilHoverOverlay';
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 16;
@@ -57,14 +59,11 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
   const setUvZoom = useEditorStore((s) => s.setUvZoom);
   const setUvPan = useEditorStore((s) => s.setUvPan);
   const commitToRecents = useEditorStore((s) => s.commitToRecents);
+  const setHoveredPixel = useEditorStore((s) => s.setHoveredPixel);
+  const variant = useEditorStore((s) => s.variant);
 
   // Local state that should NOT trigger re-renders of other consumers.
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
-  // Bucket hover preview — only updated when activeTool === 'bucket' so the
-  // M3 pencil path does not pay a per-move re-render cost. Activates via
-  // devtools `useEditorStore.setState({ activeTool: 'bucket' })` in M3;
-  // M5 enables the button.
-  const [hoverPixel, setHoverPixel] = useState<{ x: number; y: number } | null>(null);
 
   // Hot-path refs (zero-allocation invariant).
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -73,6 +72,12 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
   const lastPaintedXRef = useRef(-1);
   const lastPaintedYRef = useRef(-1);
   const panOriginRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Hover dedup refs — mirror PlayerModel's pattern so store only fires
+  // when the resolved pixel actually changes.
+  const lastHoverXRef = useRef(-1);
+  const lastHoverYRef = useRef(-1);
+  const lastHoverTargetRef = useRef<'base' | 'overlay' | ''>('');
 
   // Mount the TextureManager's canvas into this component's DOM tree.
   // The canvas has intrinsic 64×64 dimensions; the CSS transform does
@@ -141,8 +146,11 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
     panOriginRef.current = null;
     lastPaintedXRef.current = -1;
     lastPaintedYRef.current = -1;
-    setHoverPixel(null);
-  }, [textureManager, layer]);
+    lastHoverXRef.current = -1;
+    lastHoverYRef.current = -1;
+    lastHoverTargetRef.current = '';
+    setHoveredPixel(null);
+  }, [textureManager, layer, setHoveredPixel]);
 
   // Space-key pan modifier. Listen globally so Space works even if the
   // viewport doesn't have DOM focus.
@@ -174,6 +182,25 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       window.removeEventListener('keyup', onKeyUp);
     };
   }, []);
+
+  // Clear hover when tool is switched away from both hoverable tools so any
+  // lingering 2D tint doesn't persist during an eraser/picker interaction.
+  useEffect(() => {
+    if (activeTool !== 'pencil' && activeTool !== 'bucket') {
+      setHoveredPixel(null);
+      lastHoverXRef.current = -1;
+      lastHoverYRef.current = -1;
+      lastHoverTargetRef.current = '';
+    }
+  }, [activeTool, setHoveredPixel]);
+
+  // Clear hover on unmount so a lingering store value doesn't confuse
+  // any consumer after the 2D viewport is removed from the DOM.
+  useEffect(() => {
+    return () => {
+      setHoveredPixel(null);
+    };
+  }, [setHoveredPixel]);
 
   // Cursor-centered wheel zoom.
   //
@@ -283,11 +310,36 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
         });
         return;
       }
-      // Bucket hover preview: only update hoverPixel state when the bucket
-      // tool is active. M3 pencil path never hits this branch.
-      if (activeTool === 'bucket') {
+      // Hover store write: emit for both pencil and bucket, dedup'd via refs.
+      if (activeTool === 'pencil' || activeTool === 'bucket') {
         const atlasHover = pointerToAtlas(e.clientX, e.clientY);
-        setHoverPixel(atlasHover !== null ? { x: atlasHover.ax, y: atlasHover.ay } : null);
+        if (atlasHover !== null) {
+          const { ax, ay } = atlasHover;
+          const islandMap = getIslandMap(variant);
+          const id = islandIdAt(islandMap, ax, ay);
+          const target: 'base' | 'overlay' = isOverlayIsland(id) ? 'overlay' : 'base';
+          if (
+            ax !== lastHoverXRef.current ||
+            ay !== lastHoverYRef.current ||
+            target !== lastHoverTargetRef.current
+          ) {
+            lastHoverXRef.current = ax;
+            lastHoverYRef.current = ay;
+            lastHoverTargetRef.current = target;
+            setHoveredPixel({ x: ax, y: ay, target });
+          }
+        } else {
+          if (
+            lastHoverXRef.current !== -1 ||
+            lastHoverYRef.current !== -1 ||
+            lastHoverTargetRef.current !== ''
+          ) {
+            lastHoverXRef.current = -1;
+            lastHoverYRef.current = -1;
+            lastHoverTargetRef.current = '';
+            setHoveredPixel(null);
+          }
+        }
       }
       if (!paintingRef.current) return;
       const atlas = pointerToAtlas(e.clientX, e.clientY);
@@ -328,9 +380,23 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       layer,
       brushSize,
       textureManager,
-      setHoverPixel,
+      variant,
+      setHoveredPixel,
     ],
   );
+
+  const handlePointerLeave = useCallback(() => {
+    if (
+      lastHoverXRef.current !== -1 ||
+      lastHoverYRef.current !== -1 ||
+      lastHoverTargetRef.current !== ''
+    ) {
+      lastHoverXRef.current = -1;
+      lastHoverYRef.current = -1;
+      lastHoverTargetRef.current = '';
+      setHoveredPixel(null);
+    }
+  }, [setHoveredPixel]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const wasPainting = paintingRef.current;
@@ -356,6 +422,7 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onPointerLeave={handlePointerLeave}
       style={{ cursor, touchAction: 'none' }}
       ref={frameRef}
       data-testid="viewport-uv"
@@ -374,8 +441,9 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
         layer={layer}
         zoom={uvZoom}
         pan={uvPan}
-        hoverPixel={hoverPixel}
       />
+      {/* Pencil single-pixel hover tint (2D counterpart to CursorDecal). */}
+      <PencilHoverOverlay zoom={uvZoom} pan={uvPan} />
       {showGrid ? (
         <div
           className="pointer-events-none absolute left-0 top-0 origin-top-left"

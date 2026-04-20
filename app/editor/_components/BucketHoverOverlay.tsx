@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { floodFill } from '@/lib/editor/flood-fill';
 import { getIslandMap } from '@/lib/editor/island-map';
@@ -15,12 +15,23 @@ type Props = {
   layer: Layer;
   zoom: number;
   pan: { x: number; y: number };
-  hoverPixel: { x: number; y: number } | null;
 };
 
-export function BucketHoverOverlay({ layer, zoom, pan, hoverPixel }: Props) {
+export function BucketHoverOverlay({ layer, zoom, pan }: Props) {
   const activeTool = useEditorStore((s) => s.activeTool);
   const variant = useEditorStore((s) => s.variant);
+  const storeHover = useEditorStore((s) => s.hoveredPixel);
+
+  // Project the store's { x, y, target } to the { x, y } shape bucket needs.
+  // useMemo stabilises the object reference so the useEffect dep array
+  // doesn't see a new object every render when x/y haven't changed.
+  const hoverPixel = useMemo(
+    () =>
+      storeHover !== null && activeTool === 'bucket'
+        ? { x: storeHover.x, y: storeHover.y }
+        : null,
+    [storeHover, activeTool],
+  );
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [mask, setMask] = useState<Uint8Array | null>(null);
