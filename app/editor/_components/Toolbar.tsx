@@ -16,7 +16,6 @@ const TOOLS: ToolDef[] = [
   { id: 'eraser', label: 'Eraser (M5)', enabled: false },
   { id: 'picker', label: 'Picker (M5)', enabled: false },
   { id: 'bucket', label: 'Bucket (M5)', enabled: false },
-  { id: 'mirror', label: 'Mirror (M5)', enabled: false },
 ];
 
 export function Toolbar({ className }: { className?: string }) {
