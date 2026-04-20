@@ -40,7 +40,6 @@ import {
   BREATHING_AMPLITUDE,
   BREATHING_ANGULAR,
   HEAD_BASE_Y,
-  OVERLAY_ALPHA_THRESHOLD,
   SKIN_ATLAS_SIZE,
 } from './constants';
 import {
@@ -51,7 +50,9 @@ import {
   partDims,
   partPosition,
 } from './geometry';
-import { overlayToBase } from './overlay-map';
+import { resolveOverlayHit } from './overlay-map';
+import { clampAtlas } from './atlas-math';
+import { hexDigit } from '@/lib/color/hex-digit';
 import { stampPencil } from '@/lib/editor/tools/pencil';
 import { useEditorStore } from '@/lib/editor/store';
 import type { Layer } from '@/lib/editor/types';
@@ -188,11 +189,9 @@ export function PlayerModel({
   }, [activeTool, setHoveredPixel]);
 
   // Resolve a raw (uv-derived) atlas coord + mesh-isOverlay flag into the
-  // final paint target using overlay/base precedence.
-  //
-  // Reads one byte (layer.pixels[i*4+3]) per overlay resolution — no heap
-  // allocation in the call itself; the return object is the single-alloc
-  // per pointer event that M3 precedent allows.
+  // final paint target using overlay/base precedence. Delegates to the
+  // shared lib/three/overlay-map.ts resolver; this wrapper captures the
+  // per-component `layer` + `variant` so handlers stay terse.
   const resolveHit = useCallback(
     (
       rawX: number,
@@ -202,18 +201,7 @@ export function PlayerModel({
       if (!isOverlay || layer === undefined) {
         return { x: rawX, y: rawY, target: 'base' };
       }
-      const alphaIdx = (rawY * SKIN_ATLAS_SIZE + rawX) * 4 + 3;
-      const alpha = layer.pixels[alphaIdx];
-      if (alpha >= OVERLAY_ALPHA_THRESHOLD) {
-        return { x: rawX, y: rawY, target: 'overlay' };
-      }
-      const base = overlayToBase(variant, rawX, rawY);
-      if (base === null) {
-        // Should not happen for a valid overlay-mesh hit (every overlay atlas
-        // pixel has a mapping), but guard rather than crash.
-        return { x: rawX, y: rawY, target: 'overlay' };
-      }
-      return { x: base.x, y: base.y, target: 'base' };
+      return resolveOverlayHit(variant, layer.pixels, rawX, rawY, isOverlay);
     },
     [layer, variant],
   );
@@ -427,23 +415,3 @@ export function PlayerModel({
   );
 }
 
-/** Clamp a raw atlas coord to [0, 63]. Guards against rare UV extrapolation
- *  at the overlay +1px geometry edge where `e.uv` may slightly exceed [0, 1]. */
-function clampAtlas(v: number): number {
-  if (v < 0) return 0;
-  if (v >= SKIN_ATLAS_SIZE) return SKIN_ATLAS_SIZE - 1;
-  return v;
-}
-
-/**
- * Parse a single hex digit at the given index into its integer value.
- * Callers inline three back-to-back calls per channel so no tuple or array is
- * allocated per event — local scalar vars only. Mirrors the ViewportUV helper.
- */
-function hexDigit(hex: string, index: number): number {
-  const code = hex.charCodeAt(index);
-  if (code >= 48 && code <= 57) return code - 48; // '0'..'9'
-  if (code >= 97 && code <= 102) return code - 87; // 'a'..'f'
-  if (code >= 65 && code <= 70) return code - 55; // 'A'..'F' (defensive; store normalizes lowercase)
-  return 0;
-}

@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { SKIN_ATLAS_SIZE } from '@/lib/three/constants';
+import { hexDigit } from '@/lib/color/hex-digit';
 import { useEditorStore } from '@/lib/editor/store';
 import { getIslandMap, islandIdAt, isOverlayIsland } from '@/lib/editor/island-map';
 import { stampLine, stampPencil } from '@/lib/editor/tools/pencil';
@@ -468,17 +469,3 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
   );
 }
 
-/**
- * Parse a single hex digit at the given index into its integer value.
- * Callers inline three back-to-back calls per channel (see the two
- * pointer handlers) so no tuple or array is allocated per event —
- * local scalar vars only. This enforces the M3 plan's zero-allocation
- * invariant for the pointer hot path.
- */
-function hexDigit(hex: string, index: number): number {
-  const code = hex.charCodeAt(index);
-  if (code >= 48 && code <= 57) return code - 48; // '0'..'9'
-  if (code >= 97 && code <= 102) return code - 87; // 'a'..'f'
-  if (code >= 65 && code <= 70) return code - 55; // 'A'..'F' (store normalizes to lowercase; this is defensive)
-  return 0;
-}

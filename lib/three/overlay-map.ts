@@ -21,7 +21,7 @@
  * face-local offset mapping valid.
  */
 
-import { SKIN_ATLAS_SIZE } from '@/lib/three/constants';
+import { OVERLAY_ALPHA_THRESHOLD, SKIN_ATLAS_SIZE } from '@/lib/three/constants';
 import {
   CLASSIC_UVS,
   SLIM_UVS,
@@ -124,4 +124,42 @@ export function overlayToBase(
     x: baseIdx % SKIN_ATLAS_SIZE,
     y: Math.floor(baseIdx / SKIN_ATLAS_SIZE),
   };
+}
+
+/**
+ * Resolve a raw (atlas-pixel) hit plus mesh-isOverlay flag into the final
+ * paint target using M4's overlay/base precedence rule:
+ *
+ *   - If the hit mesh is a base mesh → {rawX, rawY, target: 'base'}.
+ *   - If the hit mesh is an overlay mesh AND the layer pixel's alpha is
+ *     ≥ OVERLAY_ALPHA_THRESHOLD → {rawX, rawY, target: 'overlay'}.
+ *   - Otherwise (overlay mesh + transparent pixel) → redirect to the base
+ *     atlas pixel via the LUT; target: 'base'.
+ *   - If the overlay pixel has no LUT entry (shouldn't happen for a valid
+ *     overlay-mesh hit) → fall back to {rawX, rawY, target: 'overlay'}.
+ *
+ * Extracted during M5 Unit 0 so PlayerModel.tsx and paint-bridge tests share
+ * a single source of truth. Reads one byte per overlay resolution; returns
+ * a fresh object per call (caller is expected to allocate one per event).
+ */
+export function resolveOverlayHit(
+  variant: SkinVariant,
+  pixels: Uint8ClampedArray,
+  rawX: number,
+  rawY: number,
+  isOverlay: boolean,
+): { x: number; y: number; target: 'base' | 'overlay' } {
+  if (!isOverlay) {
+    return { x: rawX, y: rawY, target: 'base' };
+  }
+  const alphaIdx = (rawY * SKIN_ATLAS_SIZE + rawX) * 4 + 3;
+  const alpha = pixels[alphaIdx];
+  if (alpha >= OVERLAY_ALPHA_THRESHOLD) {
+    return { x: rawX, y: rawY, target: 'overlay' };
+  }
+  const base = overlayToBase(variant, rawX, rawY);
+  if (base === null) {
+    return { x: rawX, y: rawY, target: 'overlay' };
+  }
+  return { x: base.x, y: base.y, target: 'base' };
 }
