@@ -16,12 +16,7 @@ import { BoxGeometry, type Mesh, type Texture } from 'three';
 import {
   BREATHING_AMPLITUDE,
   BREATHING_ANGULAR,
-  CAMERA_LOOK_TARGET,
   HEAD_BASE_Y,
-  IDLE_ORBIT_AMPLITUDE_RAD,
-  IDLE_ORBIT_RADIUS,
-  IDLE_ORBIT_START_SEC,
-  ORBIT_ANGULAR,
 } from './constants';
 import {
   type PlayerPart,
@@ -58,12 +53,6 @@ const PART_ORDER: Record<PlayerPart, number> = {
 
 const PARTS = Object.keys(PART_ORDER) as readonly PlayerPart[];
 
-// Unpack constants once at module load to avoid repeated property access in the
-// hot loop. (Micro-opt, but it also makes the zero-allocation contract easier
-// to audit — every hot-path reference is a local scalar.)
-const TARGET_X = CAMERA_LOOK_TARGET[0];
-const TARGET_Y = CAMERA_LOOK_TARGET[1];
-const TARGET_Z = CAMERA_LOOK_TARGET[2];
 
 export function PlayerModel({ texture, variant }: Props): React.ReactElement {
   const headRef = useRef<Mesh>(null);
@@ -101,20 +90,13 @@ export function PlayerModel({ texture, variant }: Props): React.ReactElement {
     const t = state.clock.elapsedTime;
 
     // Breathing: head Y oscillates around HEAD_BASE_Y.
+    // Note: the idle 3° camera micro-orbit (M2) was removed when OrbitControls
+    // landed — two agents writing to camera.position per frame caused the
+    // camera to stutter and fight user drag input. Breathing preserved because
+    // it only mutates a mesh, not the camera.
     const head = headRef.current;
     if (head !== null) {
       head.position.y = HEAD_BASE_Y + Math.sin(t * BREATHING_ANGULAR) * BREATHING_AMPLITUDE;
-    }
-
-    // Micro-orbit: gated on 500ms warm-up. Orbits the camera around the look
-    // target's Y-axis at radius IDLE_ORBIT_RADIUS, sinusoidal ±3° angular.
-    if (t >= IDLE_ORBIT_START_SEC) {
-      const phase = (t - IDLE_ORBIT_START_SEC) * ORBIT_ANGULAR;
-      const angle = Math.sin(phase) * IDLE_ORBIT_AMPLITUDE_RAD;
-      const cam = state.camera;
-      cam.position.x = TARGET_X + Math.sin(angle) * IDLE_ORBIT_RADIUS;
-      cam.position.z = TARGET_Z + Math.cos(angle) * IDLE_ORBIT_RADIUS;
-      cam.lookAt(TARGET_X, TARGET_Y, TARGET_Z);
     }
   });
 

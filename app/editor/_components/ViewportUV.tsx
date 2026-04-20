@@ -18,7 +18,7 @@
  * 1.15× per tick, clamped to [MIN_ZOOM, MAX_ZOOM]. Space+drag pans.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { SKIN_ATLAS_SIZE } from '@/lib/three/constants';
 import { useEditorStore } from '@/lib/editor/store';
@@ -84,6 +84,45 @@ export function ViewportUV({ textureManager, layer, markDirty, className }: Prop
       }
     };
   }, [textureManager]);
+
+  // Auto-fit + center the 64×64 atlas inside the viewport on initial layout.
+  // Without this, the canvas sits at the top-left at intrinsic 64px size and
+  // is effectively invisible on a ~600px wide column — the user can't see
+  // or click it. Runs once per mount; user's subsequent zoom/pan is preserved.
+  // ResizeObserver is used because flex-layout dimensions may not be final
+  // on the first layout pass (clientWidth can read 0).
+  const didAutoFitRef = useRef(false);
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    if (frame === null) return;
+
+    const fit = (): boolean => {
+      if (didAutoFitRef.current) return true;
+      const w = frame.clientWidth;
+      const h = frame.clientHeight;
+      if (w === 0 || h === 0) return false;
+      // Fit the atlas to ~90% of the smaller dimension, integer-zoom-stepped
+      // so pixel edges stay crisp (image-rendering: pixelated).
+      const fitZoom = Math.max(
+        MIN_ZOOM,
+        Math.min(MAX_ZOOM, Math.floor((Math.min(w, h) * 0.9) / SKIN_ATLAS_SIZE)),
+      );
+      const scaled = SKIN_ATLAS_SIZE * fitZoom;
+      setUvZoom(fitZoom);
+      setUvPan({ x: (w - scaled) / 2, y: (h - scaled) / 2 });
+      didAutoFitRef.current = true;
+      return true;
+    };
+
+    if (fit()) return;
+
+    // Layout not settled yet — watch for the first non-zero size.
+    const obs = new ResizeObserver(() => {
+      if (fit()) obs.disconnect();
+    });
+    obs.observe(frame);
+    return () => obs.disconnect();
+  }, [setUvZoom, setUvPan]);
 
   // Space-key pan modifier. Listen globally so Space works even if the
   // viewport doesn't have DOM focus.

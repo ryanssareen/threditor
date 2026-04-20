@@ -12,6 +12,7 @@
  */
 
 import { Canvas } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
 import { type Texture } from 'three';
 
 import {
@@ -46,6 +47,31 @@ export function EditorCanvas({ texture, variant }: Props) {
         {texture !== null ? (
           <PlayerModel texture={texture} variant={variant} />
         ) : null}
+        {/*
+          OrbitControls: originally scoped to M8 polish but pulled forward
+          because the static 3° idle orbit doesn't let users inspect the
+          model from arbitrary angles. Configured to match the camera
+          framing so rotation pivots around the look target.
+          - enablePan: false (camera pan would fight the 2D canvas's pan)
+          - enableZoom: true (wheel zoom; acceptable since no 3D paint in M3)
+          - min/max polar: clamp so user can't flip the model upside down
+          - damping: feels responsive at 0.05 without inertia drift
+        */}
+        <OrbitControls
+          target={[
+            CAMERA_LOOK_TARGET[0],
+            CAMERA_LOOK_TARGET[1],
+            CAMERA_LOOK_TARGET[2],
+          ]}
+          enablePan={false}
+          enableZoom={true}
+          minDistance={2.5}
+          maxDistance={8}
+          minPolarAngle={Math.PI / 6}
+          maxPolarAngle={Math.PI - Math.PI / 6}
+          enableDamping
+          dampingFactor={0.05}
+        />
       </Canvas>
     </div>
   );
