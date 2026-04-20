@@ -244,6 +244,13 @@ export function PlayerModel({
 
   const handlePointerDown = useCallback(
     (e: ThreeEvent<PointerEvent>) => {
+      // P0 (review finding): only primary button paints. Right-click (2) is
+      // OrbitControls' rotate gesture; middle-click (1) is dolly. Touch and
+      // pen both report button=0 for primary, so this guard is pointer-type-
+      // agnostic. Without it, every camera gesture strokes a trail of pixels
+      // across whichever body part the cursor sweeps over during orbit.
+      if (e.button !== 0) return;
+
       if (hydrationPending) return;
       if (activeTool !== 'pencil') return;
       if (!e.uv) return;
@@ -253,6 +260,13 @@ export function PlayerModel({
       if (part === undefined) return;
 
       e.stopPropagation();
+
+      // P0 (review finding): capture the pointer on the canvas DOM element so
+      // pointerup fires even if the user drags off the mesh before release.
+      // Without this, R3F's pointerup dispatch requires a mesh hit at release
+      // time; releases over empty canvas would leave paintingRef stuck true,
+      // auto-painting on the next hover without any button held.
+      (e.target as Element).setPointerCapture(e.pointerId);
 
       const rawX = clampAtlas(Math.floor(e.uv.x * SKIN_ATLAS_SIZE));
       const rawY = clampAtlas(Math.floor((1 - e.uv.y) * SKIN_ATLAS_SIZE));
@@ -286,6 +300,17 @@ export function PlayerModel({
       if (!e.uv) return;
       const part = e.object.userData.part as PlayerPart | undefined;
       if (part === undefined) return;
+
+      // P1 (review finding): without stopPropagation, the raycast hits BOTH
+      // the overlay mesh AND the base mesh behind it (both FrontSide-faced
+      // toward camera). R3F dispatches handlePointerMove on both in order;
+      // the base hit overrides the overlay hit, so hoveredPixel always ends
+      // with target='base' even when the user is visibly hovering an opaque
+      // overlay pixel. Label + 2D tint + decal position all lied as a
+      // result. Stopping propagation after the first valid hit resolves it.
+      // (handlePointerDown already does this, which is why PAINT targeted
+      // the overlay correctly; only HOVER was broken.)
+      e.stopPropagation();
 
       const rawX = clampAtlas(Math.floor(e.uv.x * SKIN_ATLAS_SIZE));
       const rawY = clampAtlas(Math.floor((1 - e.uv.y) * SKIN_ATLAS_SIZE));
@@ -326,9 +351,12 @@ export function PlayerModel({
     [activeTool, resolveHit, stampAt, setHoveredPixel],
   );
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((e: ThreeEvent<PointerEvent>) => {
     if (!paintingRef.current) return;
     paintingRef.current = false;
+    // Release the capture taken on pointerdown so the canvas element can
+    // dispatch events normally again.
+    (e.target as Element).releasePointerCapture?.(e.pointerId);
     if (textureManager !== undefined && layer !== undefined) {
       // Authoritative multi-layer composite at stroke end — mirrors
       // ViewportUV's M3 pattern (flushLayer fast path during stroke,

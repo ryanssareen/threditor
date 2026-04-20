@@ -253,6 +253,12 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      // Primary-button-only paint. Right-click opens the browser context
+      // menu on this div anyway, but without this guard, the button release
+      // races the context menu and a stray pixel gets committed in between.
+      // Also blocks middle-click-drag from painting.
+      if (e.button !== 0) return;
+
       // M4 Unit 0: paint events are inert while the document is still
       // hydrating from IDB. Pan (space+drag) is NOT gated — user may
       // explore the empty canvas while we wait.

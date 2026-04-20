@@ -57,18 +57,22 @@ export function EditorCanvas({
         // pointer events. OrbitControls' touches.ONE=null also depends
         // on this to reach ONE-finger events at all.
         style={{ touchAction: 'none' }}
-        onCreated={({ camera, raycaster }) => {
+        onCreated={({ camera }) => {
           camera.lookAt(
             CAMERA_LOOK_TARGET[0],
             CAMERA_LOOK_TARGET[1],
             CAMERA_LOOK_TARGET[2],
           );
-          // M4 (R8): first-hit-only prevents paint bleed-through onto body
-          // parts occluded behind the hit mesh. `firstHitOnly` is a
-          // three.js property; combined with material.side=FrontSide (the
-          // default for MeshStandardMaterial), camera-facing faces are the
-          // only paint target.
-          (raycaster as unknown as { firstHitOnly?: boolean }).firstHitOnly = true;
+          // NOTE: previous code set `raycaster.firstHitOnly = true` claiming
+          // this prevents paint bleed-through onto occluded body parts. That
+          // flag is only honored by the `three-mesh-bvh` plugin (which we
+          // don't use) — in vanilla three.js it's a no-op. The actual
+          // occlusion defense is `e.stopPropagation()` in PlayerModel's
+          // pointerdown AND pointermove handlers: on any ray that hits
+          // multiple meshes (overlay in front of base), stopPropagation
+          // terminates the dispatch loop at the first (nearest) mesh.
+          // material.side = FrontSide (MeshStandardMaterial default) prevents
+          // backface hits when the camera rotates behind a part.
         }}
       >
         <ambientLight intensity={0.4} />
