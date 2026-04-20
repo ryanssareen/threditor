@@ -17,52 +17,22 @@ import { describe, expect, it } from 'vitest';
 
 import { SKIN_ATLAS_SIZE, OVERLAY_ALPHA_THRESHOLD } from '@/lib/three/constants';
 import { CLASSIC_UVS } from '@/lib/three/geometry';
-import { overlayToBase } from '@/lib/three/overlay-map';
+import { resolveOverlayHit } from '@/lib/three/overlay-map';
+import { uvToAtlasX, uvToAtlasY } from '@/lib/three/atlas-math';
 
-// Replicate PlayerModel's internal scalar helpers for test coverage.
-// These must stay in sync with lib/three/PlayerModel.tsx — any change
-// there needs a matching change here.
-function uvToAtlasX(u: number): number {
-  const v = Math.floor(u * SKIN_ATLAS_SIZE);
-  return clampAtlas(v);
-}
+// M5 Unit 0: this test used to replicate PlayerModel's internal scalar
+// helpers. They now live in lib/three/atlas-math.ts and
+// lib/three/overlay-map.ts; import from there and assert against the
+// canonical source rather than a drifting copy.
 
-function uvToAtlasY(v: number): number {
-  // Y-flip: atlas is top-down, UV is bottom-up.
-  const y = Math.floor((1 - v) * SKIN_ATLAS_SIZE);
-  return clampAtlas(y);
-}
-
-function clampAtlas(v: number): number {
-  if (v < 0) return 0;
-  if (v >= SKIN_ATLAS_SIZE) return SKIN_ATLAS_SIZE - 1;
-  return v;
-}
-
-/**
- * Resolve an overlay hit the same way PlayerModel.resolveHit does.
- * Extracted here as a free function for testability — the component version
- * closes over `layer` and `variant`.
- */
-function resolveHit(
+const resolveHit = (
   rawX: number,
   rawY: number,
   isOverlay: boolean,
   pixels: Uint8ClampedArray,
   variant: 'classic' | 'slim',
-): { x: number; y: number; target: 'base' | 'overlay' } {
-  if (!isOverlay) return { x: rawX, y: rawY, target: 'base' };
-  const alphaIdx = (rawY * SKIN_ATLAS_SIZE + rawX) * 4 + 3;
-  const alpha = pixels[alphaIdx];
-  if (alpha >= OVERLAY_ALPHA_THRESHOLD) {
-    return { x: rawX, y: rawY, target: 'overlay' };
-  }
-  const base = overlayToBase(variant, rawX, rawY);
-  if (base === null) {
-    return { x: rawX, y: rawY, target: 'overlay' };
-  }
-  return { x: base.x, y: base.y, target: 'base' };
-}
+): { x: number; y: number; target: 'base' | 'overlay' } =>
+  resolveOverlayHit(variant, pixels, rawX, rawY, isOverlay);
 
 describe('uvToAtlas (3D hit → atlas pixel)', () => {
   describe('X axis (u → atlas x, no flip)', () => {
