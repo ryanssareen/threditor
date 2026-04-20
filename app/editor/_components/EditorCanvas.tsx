@@ -52,6 +52,11 @@ export function EditorCanvas({
       <Canvas
         camera={{ position: [...CAMERA_POSITION], fov: CAMERA_FOV }}
         className="h-full w-full"
+        // touch-action: none prevents mobile browsers from treating a
+        // single-finger drag as page-scroll — that would hijack paint
+        // pointer events. OrbitControls' touches.ONE=null also depends
+        // on this to reach ONE-finger events at all.
+        style={{ touchAction: 'none' }}
         onCreated={({ camera, raycaster }) => {
           camera.lookAt(
             CAMERA_LOOK_TARGET[0],

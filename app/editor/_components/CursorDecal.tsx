@@ -96,7 +96,15 @@ export function CursorDecal(): React.ReactElement | null {
 
   return (
     <Billboard position={position}>
-      <mesh renderOrder={2}>
+      <mesh
+        renderOrder={2}
+        // CRITICAL: the decal mesh MUST NOT participate in raycasting.
+        // Without this, the decal intercepts pointer events before they
+        // reach the player-model meshes (depthTest={false} + renderOrder=2
+        // puts it visually on top; raycast would hit it first). Result:
+        // second+ paint clicks stop working after the first hover.
+        raycast={() => null}
+      >
         <planeGeometry args={[CURSOR_DECAL_SIZE, CURSOR_DECAL_SIZE]} />
         <meshBasicMaterial
           map={cursorTexture}
