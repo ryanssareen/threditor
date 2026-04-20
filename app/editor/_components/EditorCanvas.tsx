@@ -9,6 +9,11 @@
  * the 2D paint surface (`ViewportUV`) and this 3D surface share the same
  * TextureManager — pencil strokes paint once, appear everywhere. See the
  * `useTextureManagerBundle` hook in `lib/editor/use-texture-manager.ts`.
+ *
+ * M4: threads textureManager + layer + markDirty + hydrationPending to
+ * PlayerModel so the 3D surface is paintable via the same pipeline the
+ * 2D surface uses. Sets `raycaster.firstHitOnly = true` once on Canvas
+ * creation to prevent paint bleed-through on occluded body parts.
  */
 
 import { Canvas } from '@react-three/fiber';
@@ -21,31 +26,56 @@ import {
   CAMERA_POSITION,
 } from '@/lib/three/constants';
 import { PlayerModel } from '@/lib/three/PlayerModel';
-import type { SkinVariant } from '@/lib/editor/types';
+import type { Layer, SkinVariant } from '@/lib/editor/types';
+import type { TextureManager } from '@/lib/editor/texture';
 
 type Props = {
   texture: Texture | null;
   variant: SkinVariant;
+  textureManager?: TextureManager;
+  layer?: Layer;
+  markDirty?: () => void;
+  hydrationPending?: boolean;
 };
 
-export function EditorCanvas({ texture, variant }: Props) {
+export function EditorCanvas({
+  texture,
+  variant,
+  textureManager,
+  layer,
+  markDirty,
+  hydrationPending,
+}: Props) {
   return (
     <div className="relative h-full w-full">
       <Canvas
         camera={{ position: [...CAMERA_POSITION], fov: CAMERA_FOV }}
         className="h-full w-full"
-        onCreated={({ camera }) => {
+        onCreated={({ camera, raycaster }) => {
           camera.lookAt(
             CAMERA_LOOK_TARGET[0],
             CAMERA_LOOK_TARGET[1],
             CAMERA_LOOK_TARGET[2],
           );
+          // M4 (R8): first-hit-only prevents paint bleed-through onto body
+          // parts occluded behind the hit mesh. `firstHitOnly` is a
+          // three.js property; combined with material.side=FrontSide (the
+          // default for MeshStandardMaterial), camera-facing faces are the
+          // only paint target.
+          (raycaster as unknown as { firstHitOnly?: boolean }).firstHitOnly = true;
         }}
       >
         <ambientLight intensity={0.4} />
         <directionalLight position={[3, 5, 2]} intensity={1.1} />
         {texture !== null ? (
-          <PlayerModel texture={texture} variant={variant} />
+          <PlayerModel
+            texture={texture}
+            variant={variant}
+            textureManager={textureManager}
+            layer={layer}
+            markDirty={markDirty}
+            hydrationPending={hydrationPending}
+          />
         ) : null}
         {/*
           OrbitControls: originally scoped to M8 polish but pulled forward

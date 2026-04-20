@@ -121,6 +121,10 @@ export function EditorLayout() {
         <EditorCanvas
           texture={bundle?.textureManager.getTexture() ?? null}
           variant={variant}
+          textureManager={bundle?.textureManager}
+          layer={bundle?.layer}
+          markDirty={() => markDirtyRef.current()}
+          hydrationPending={hydrationPending}
         />
       </div>
 
