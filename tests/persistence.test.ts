@@ -270,6 +270,130 @@ describe('persistence', () => {
     useEditorStore.setState({ savingState: 'pending' });
   });
 
+  // ── M6 Unit 5: N-layer persistence ───────────────────────────────────
+
+  it('buildDocument writes all N layers with their metadata', async () => {
+    vi.useFakeTimers();
+    setSpy.mockResolvedValue(undefined);
+
+    const layerA: Layer = {
+      id: 'base', name: 'Base', visible: true, opacity: 1, blendMode: 'normal',
+      pixels: new Uint8ClampedArray(64 * 64 * 4),
+    };
+    const layerB: Layer = {
+      id: 'mid', name: 'Shading', visible: false, opacity: 0.5, blendMode: 'multiply',
+      pixels: new Uint8ClampedArray(64 * 64 * 4),
+    };
+    const layerC: Layer = {
+      id: 'top', name: 'Highlights', visible: true, opacity: 0.75, blendMode: 'screen',
+      pixels: new Uint8ClampedArray(64 * 64 * 4),
+    };
+    // Pepper pixels so bit-identity is meaningful.
+    layerA.pixels[0] = 1; layerA.pixels[64 * 64 * 4 - 1] = 255;
+    layerB.pixels[100] = 42;
+    layerC.pixels[500] = 7;
+
+    const { markDirty, cleanup } = initPersistence({
+      getLayers: () => [layerA, layerB, layerC],
+      getActiveLayerId: () => 'mid',
+    });
+
+    await Promise.resolve(); await Promise.resolve();
+    markDirty();
+    await vi.advanceTimersByTimeAsync(600);
+    await Promise.resolve();
+
+    const doc = setSpy.mock.calls.find((c) => c[0] === 'skin-editor:m3-document')?.[1] as SkinDocument | undefined;
+    expect(doc).toBeDefined();
+    expect(doc!.layers).toHaveLength(3);
+    expect(doc!.activeLayerId).toBe('mid');
+
+    // Bit-identity per layer.
+    expect(doc!.layers[0].pixels[0]).toBe(1);
+    expect(doc!.layers[0].pixels[64 * 64 * 4 - 1]).toBe(255);
+    expect(doc!.layers[1].pixels[100]).toBe(42);
+    expect(doc!.layers[2].pixels[500]).toBe(7);
+
+    // Metadata round-trip.
+    expect(doc!.layers[0]).toMatchObject({ id: 'base', name: 'Base', visible: true, opacity: 1, blendMode: 'normal' });
+    expect(doc!.layers[1]).toMatchObject({ id: 'mid', name: 'Shading', visible: false, opacity: 0.5, blendMode: 'multiply' });
+    expect(doc!.layers[2]).toMatchObject({ id: 'top', name: 'Highlights', visible: true, opacity: 0.75, blendMode: 'screen' });
+
+    cleanup();
+  });
+
+  it('loadDocument returns a multi-layer document verbatim', async () => {
+    const multi: SkinDocument = {
+      id: 'm3-default',
+      variant: 'slim',
+      layers: [
+        { ...mockLayer, id: 'l1', name: 'l1' },
+        { ...mockLayer, id: 'l2', name: 'l2', opacity: 0.25, blendMode: 'overlay' },
+      ],
+      activeLayerId: 'l2',
+      createdAt: 42,
+      updatedAt: 99,
+    };
+    getSpy.mockResolvedValue(multi);
+
+    const result = await loadDocument();
+
+    expect(result).toEqual(multi);
+    expect(result?.layers).toHaveLength(2);
+    expect(result?.activeLayerId).toBe('l2');
+  });
+
+  it('loadDocument returns M3–M5 single-layer saves without modification', async () => {
+    // Simulate a document written by M3/M5 (single layer, same shape).
+    const legacy: SkinDocument = {
+      id: 'm3-default',
+      variant: 'classic',
+      layers: [mockLayer],
+      activeLayerId: mockLayer.id,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    getSpy.mockResolvedValue(legacy);
+
+    const result = await loadDocument();
+
+    expect(result).not.toBeNull();
+    expect(result?.layers).toHaveLength(1);
+    expect(result?.layers[0].id).toBe(mockLayer.id);
+  });
+
+  it('getLayers is evaluated at flush time, not install time (captures latest layer set)', async () => {
+    vi.useFakeTimers();
+    setSpy.mockResolvedValue(undefined);
+
+    const initial: Layer[] = [mockLayer];
+    let current: Layer[] = initial;
+
+    const { markDirty, cleanup } = initPersistence({
+      getLayers: () => current,
+      getActiveLayerId: () => current[current.length - 1]?.id ?? '',
+    });
+
+    await Promise.resolve(); await Promise.resolve();
+
+    // Swap to a 2-layer set before markDirty fires.
+    current = [
+      mockLayer,
+      { ...mockLayer, id: 'added', name: 'added' },
+    ];
+
+    markDirty();
+    await vi.advanceTimersByTimeAsync(600);
+    await Promise.resolve();
+
+    const doc = setSpy.mock.calls.find((c) => c[0] === 'skin-editor:m3-document')?.[1] as SkinDocument | undefined;
+    expect(doc?.layers).toHaveLength(2);
+    expect(doc?.layers[1].id).toBe('added');
+    expect(doc?.activeLayerId).toBe('added');
+
+    cleanup();
+  });
+
   // ── Edge: getLayer returning null skips the write ─────────────────────
 
   it('attemptWrite is a no-op when getLayer returns null', async () => {
