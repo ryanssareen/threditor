@@ -212,15 +212,24 @@ export type SkinDocument = {
   updatedAt: number;
 };
 
-export type Stroke = {
-  id: string;
-  layerId: string;
+export type StrokePatch = {
   bbox: { x: number; y: number; w: number; h: number };
   before: Uint8ClampedArray;    // Length = bbox.w * bbox.h * 4
   after: Uint8ClampedArray;
+};
+
+export type Stroke = {
+  id: string;
+  layerId: string;
+  patches: StrokePatch[];       // 1 for non-mirrored; 2 (primary + mirror) for mirrored
   tool: 'pencil' | 'eraser' | 'bucket';
   mirrored: boolean;
 };
+// Amended M6 per plan D2: mirror strokes produce two disjoint patches rather
+// than one spanning bbox. A spanning bbox from rightArm.front (y≈20) to
+// leftArm.front (y≈52) would capture a 64×32 padding slab of unchanged
+// pixels (~8 KB per stroke); the multi-patch shape is tight. Aseprite and
+// Photoshop Paint Symmetry use the same "one command, multiple regions" shape.
 
 export type IslandId = number;  // 0 = unused, 1+ = body part region
 export type IslandMap = Uint8Array;  // Length = 64 * 64
@@ -455,11 +464,18 @@ class TextureManager {
     this.ctx.clearRect(0, 0, 64, 64);
     for (const layer of layers) {
       if (!layer.visible) continue;
+      // Amended M6 per plan D1: putImageData ignores globalAlpha AND
+      // globalCompositeOperation (WHATWG HTML §4.12.5.1.14). Blit into a
+      // reused scratch OffscreenCanvas via putImageData, then drawImage
+      // the scratch onto this.ctx — drawImage DOES honor both properties.
+      const scratch = this.scratchCtx;
+      scratch.putImageData(new ImageData(layer.pixels, 64, 64), 0, 0);
       this.ctx.globalAlpha = layer.opacity;
       this.ctx.globalCompositeOperation = mapBlendMode(layer.blendMode);
-      const imageData = new ImageData(layer.pixels, 64, 64);
-      this.ctx.putImageData(imageData, 0, 0);
+      this.ctx.drawImage(scratch.canvas, 0, 0);
     }
+    this.ctx.globalAlpha = 1;
+    this.ctx.globalCompositeOperation = 'source-over';
     this.markDirty();
   }
 
@@ -489,39 +505,78 @@ At 64×64, full texture re-upload is 16 KB. At 60fps, that is 960 KB/s of PCIe t
 ```ts
 // lib/editor/undo.ts
 
-const MAX_HISTORY = 100;
+const MAX_HISTORY_COUNT = 100;                 // hard cap, safety net
+const MAX_HISTORY_BYTES = 5 * 1024 * 1024;     // primary budget: 5 MB
+
+// Amended M6 per plan D3: the command union covers pixel strokes AND
+// layer-lifecycle commands (add/delete/reorder/rename/opacity/blend/
+// visibility). Unified stack matches Figma/Linear/Notion 2026 UX norms.
+type Command =
+  | { kind: 'stroke'; stroke: Stroke }
+  | { kind: 'layer-add'; layer: Layer; insertedAt: number }
+  | { kind: 'layer-delete'; layer: Layer; removedFrom: number }
+  | { kind: 'layer-reorder'; from: number; to: number }
+  | { kind: 'layer-rename'; id: string; before: string; after: string }
+  | { kind: 'layer-opacity'; id: string; before: number; after: number }
+  | { kind: 'layer-blend'; id: string; before: BlendMode; after: BlendMode }
+  | { kind: 'layer-visibility'; id: string; before: boolean; after: boolean };
 
 class UndoStack {
-  private strokes: Stroke[] = [];
+  private commands: Command[] = [];
   private cursor = -1;
+  private bytesUsed = 0;
 
-  push(stroke: Stroke) {
-    this.strokes = this.strokes.slice(0, this.cursor + 1);
-    this.strokes.push(stroke);
-    if (this.strokes.length > MAX_HISTORY) {
-      this.strokes.shift();
-    } else {
-      this.cursor++;
+  push(cmd: Command) {
+    // Amended M6: truncate redo tail, then evict-oldest while over either cap.
+    this.truncateRedoTail();
+    this.commands.push(cmd);
+    this.cursor++;
+    this.bytesUsed += sizeOf(cmd);
+    while (
+      this.commands.length > MAX_HISTORY_COUNT ||
+      this.bytesUsed > MAX_HISTORY_BYTES
+    ) {
+      const evicted = this.commands.shift()!;
+      this.bytesUsed -= sizeOf(evicted);
+      this.cursor--;
     }
   }
 
-  undo(layers: Layer[]): boolean {
+  // Amended M6 per plan D10: undo is ignored while a stroke is active
+  // (pointer still down). Paint surfaces bridge strokeActive into the store.
+  undo(state: EditorStateActions): boolean {
+    if (state.strokeActive) return false;
     if (this.cursor < 0) return false;
-    applyDiff(layers, this.strokes[this.cursor], 'before');
+    applyCommand(state, this.commands[this.cursor], 'before');
     this.cursor--;
     return true;
   }
 
-  redo(layers: Layer[]): boolean {
-    if (this.cursor >= this.strokes.length - 1) return false;
+  redo(state: EditorStateActions): boolean {
+    if (state.strokeActive) return false;
+    if (this.cursor >= this.commands.length - 1) return false;
     this.cursor++;
-    applyDiff(layers, this.strokes[this.cursor], 'after');
+    applyCommand(state, this.commands[this.cursor], 'after');
     return true;
   }
 }
 ```
 
-Mirror strokes: one `Stroke` record, `bbox` spans both sides, `mirrored: true`. Undo/redo treats as a single atomic step.
+Amended M6 per plan D2: mirror strokes emit ONE `Stroke` command containing
+two disjoint `StrokePatch` entries (primary + mirror). `mirrored: true`.
+Undo/redo iterates patches; treats the Stroke as a single atomic step.
+
+Amended M6 per plan D4: dual memory caps. `MAX_HISTORY_BYTES` (5 MB) is the
+primary budget; `MAX_HISTORY_COUNT` (100) is the secondary safety net.
+
+Amended M6 per plan D5: only pixel-mutating actions and layer-lifecycle
+actions push to the stack. Tool/brush/color/mirror-toggle/view/active-layer
+selection are session-ephemeral and never push.
+
+Amended M6 per plan D9: a redo whose `layerId` no longer exists (the target
+layer was deleted after the stroke pushed) silently no-ops that entry and
+advances the cursor. Rebuilding the whole layer from patches would require
+whole-layer snapshots, breaking the memory budget.
 
 ---
 
