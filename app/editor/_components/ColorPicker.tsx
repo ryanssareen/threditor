@@ -45,6 +45,7 @@ export function ColorPicker({ className }: { className?: string }) {
       aria-label="Color picker"
       className={`flex flex-col gap-3 ${className ?? ''}`}
       data-testid="color-picker"
+      data-pulse-target="color"
     >
       <PreviewStack />
       <SLSquare />

@@ -572,3 +572,50 @@ describe('markEdited flow integration', () => {
     expect(state.hasEditedSinceTemplate).toBe(true);
   });
 });
+
+describe('post-apply timeline integration (Unit 7)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    cancelActiveTransition();
+  });
+
+  afterEach(() => {
+    cancelActiveTransition();
+    vi.useRealTimers();
+  });
+
+  it('schedules hint at +700ms, pulse at +1000ms, pulseClear at +1600ms, hintClear at +3700ms', () => {
+    const { state, applyActions } = makeTestHarness();
+
+    applyTemplate(
+      applyActions,
+      () => {},
+      mkTemplate({ contextualHint: 'Try a color', affordancePulse: 'color' }),
+      makeTemplatePixels(),
+    );
+
+    // Before any timer fires
+    expect(state.contextualHint).toBeNull();
+    expect(state.pulseTarget).toBeNull();
+
+    // +700ms → hint set
+    vi.advanceTimersByTime(TIMING.HINT_DELAY_MS);
+    expect(state.contextualHint).toBe('Try a color');
+    expect(state.pulseTarget).toBeNull();
+
+    // +300ms more (total 1000ms) → pulse set
+    vi.advanceTimersByTime(TIMING.PULSE_DELAY_MS - TIMING.HINT_DELAY_MS);
+    expect(state.pulseTarget).toBe('color');
+
+    // +600ms more (total 1600ms) → pulse cleared
+    vi.advanceTimersByTime(TIMING.PULSE_DURATION_MS);
+    expect(state.pulseTarget).toBeNull();
+    expect(state.contextualHint).toBe('Try a color');
+
+    // +2100ms more (total 3700ms) → hint cleared
+    vi.advanceTimersByTime(
+      TIMING.HINT_DELAY_MS + TIMING.HINT_DURATION_MS - TIMING.PULSE_DELAY_MS - TIMING.PULSE_DURATION_MS,
+    );
+    expect(state.contextualHint).toBeNull();
+  });
+});
