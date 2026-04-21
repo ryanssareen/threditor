@@ -33,3 +33,15 @@ body {
 html {
   color-scheme: dark;
 }
+
+@keyframes template-affordance-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--color-accent); }
+  30%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent) 40%, transparent); }
+  70%  { box-shadow: 0 0 0 8px color-mix(in srgb, var(--color-accent) 10%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+[data-pulse="true"] {
+  animation: template-affordance-pulse 600ms ease-out;
+  border-radius: 0.25rem;
+}
