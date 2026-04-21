@@ -31,18 +31,41 @@
 import { CanvasTexture, NearestFilter } from 'three';
 
 import { SKIN_ATLAS_SIZE } from '@/lib/three/constants';
+import type { BlendMode } from './store';
 import type { Layer } from './types';
+
+/**
+ * M6: maps our four supported blend modes to Canvas2D globalCompositeOperation
+ * strings. Record<BlendMode, ...> enforces exhaustiveness at compile time — if
+ * a BlendMode member is added without a mapping here, TS errors at build.
+ */
+const BLEND_MODE_MAP: Record<BlendMode, GlobalCompositeOperation> = {
+  normal: 'source-over',
+  multiply: 'multiply',
+  overlay: 'overlay',
+  screen: 'screen',
+};
 
 export class TextureManager {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly texture: CanvasTexture;
+  // M6: scratch canvas for the composite pipeline. We blit each layer's
+  // pixels into the scratch via putImageData (which bypasses globalAlpha
+  // + globalCompositeOperation per WHATWG §4.12.5.1.14), then drawImage
+  // the scratch onto this.ctx — drawImage DOES honor both. Plan D1.
+  private readonly scratchCanvas: HTMLCanvasElement;
+  private readonly scratchCtx: CanvasRenderingContext2D;
   private dirty = false;
   private rafHandle: number | null = null;
   private disposed = false;
-  private cachedImageData: ImageData | null = null;
 
-  constructor(canvas?: HTMLCanvasElement, ctx?: CanvasRenderingContext2D) {
+  constructor(
+    canvas?: HTMLCanvasElement,
+    ctx?: CanvasRenderingContext2D,
+    scratchCanvas?: HTMLCanvasElement,
+    scratchCtx?: CanvasRenderingContext2D,
+  ) {
     this.canvas = canvas ?? document.createElement('canvas');
     this.canvas.width = SKIN_ATLAS_SIZE;
     this.canvas.height = SKIN_ATLAS_SIZE;
@@ -55,6 +78,21 @@ export class TextureManager {
     }
     this.ctx = providedOrDefaultCtx;
     this.ctx.imageSmoothingEnabled = false;
+
+    // Scratch canvas for the composite pipeline (D1). Tests may inject
+    // mocks via the optional parameters; production passes nothing and
+    // a fresh off-DOM canvas + context is created here.
+    this.scratchCanvas = scratchCanvas ?? document.createElement('canvas');
+    this.scratchCanvas.width = SKIN_ATLAS_SIZE;
+    this.scratchCanvas.height = SKIN_ATLAS_SIZE;
+    const resolvedScratchCtx =
+      scratchCtx ??
+      this.scratchCanvas.getContext('2d', { willReadFrequently: true });
+    if (resolvedScratchCtx === null) {
+      throw new Error('TextureManager: failed to obtain scratch 2D context');
+    }
+    this.scratchCtx = resolvedScratchCtx;
+    this.scratchCtx.imageSmoothingEnabled = false;
 
     this.texture = new CanvasTexture(this.canvas);
     this.texture.magFilter = NearestFilter;
@@ -85,26 +123,41 @@ export class TextureManager {
   }
 
   /**
-   * Clear the offscreen canvas and blit each visible layer's pixel buffer.
-   * For M3 with a single layer this is a single putImageData call. M6
-   * extends to honoring `opacity` and `blendMode` per layer.
+   * Clear the offscreen canvas and blit each visible layer's pixel buffer
+   * with the correct opacity + blend mode.
    *
-   * Allocates one ImageData per visible layer per call. Acceptable because
-   * `composite()` is called per-stroke-commit, not per-pointer-move.
+   * M6 (plan D1): putImageData bypasses globalAlpha AND
+   * globalCompositeOperation (WHATWG HTML §4.12.5.1.14). The M3–M5 code
+   * path worked because we only ever had one layer at opacity=1 /
+   * blendMode='normal'. Now we blit each layer into a reused scratch
+   * canvas via putImageData and then drawImage the scratch onto this.ctx
+   * — drawImage DOES honor both properties.
+   *
+   * Allocates one ImageData per visible layer. Acceptable because
+   * composite() runs on stroke-end + metadata changes, not per move.
    */
   composite(layers: readonly Layer[]): void {
     this.ctx.clearRect(0, 0, SKIN_ATLAS_SIZE, SKIN_ATLAS_SIZE);
+    this.ctx.globalAlpha = 1;
+    this.ctx.globalCompositeOperation = 'source-over';
     for (const layer of layers) {
       if (!layer.visible) continue;
-      // M3: single layer, opacity=1, blendMode='normal'. M6 extends this
-      // with globalAlpha + globalCompositeOperation mapping.
-      const imageData = new ImageData(
-        layer.pixels,
-        SKIN_ATLAS_SIZE,
-        SKIN_ATLAS_SIZE,
+      if (layer.opacity <= 0) continue;
+      // Blit the raw pixels into the scratch canvas (bypassing the parent
+      // ctx's alpha/composite state — putImageData ignores them anyway).
+      this.scratchCtx.putImageData(
+        new ImageData(layer.pixels, SKIN_ATLAS_SIZE, SKIN_ATLAS_SIZE),
+        0,
+        0,
       );
-      this.ctx.putImageData(imageData, 0, 0);
+      // Now drawImage onto the main ctx with the layer's opacity + blend.
+      this.ctx.globalAlpha = layer.opacity;
+      this.ctx.globalCompositeOperation = BLEND_MODE_MAP[layer.blendMode];
+      this.ctx.drawImage(this.scratchCanvas, 0, 0);
     }
+    // Reset context state for any subsequent consumer (flushLayer et al.).
+    this.ctx.globalAlpha = 1;
+    this.ctx.globalCompositeOperation = 'source-over';
     this.markDirty();
   }
 
@@ -117,23 +170,20 @@ export class TextureManager {
   }
 
   /**
-   * Hot-path canvas update: copies `layer.pixels` into a pre-allocated
-   * ImageData (one heap allocation on first call; zero allocations on every
-   * subsequent call) and flushes to ctx. Use this in pointer-down/move
-   * handlers. Call composite() once at pointer-up for the authoritative
-   * multi-layer blit.
+   * Hot-path canvas update during a stroke. M3–M5 had a single-layer fast
+   * path (putImageData direct to main ctx) that bypassed opacity + blend.
+   * M6 can't do that — opacity<1 or blendMode≠'normal' on a non-top layer
+   * would flash raw pixels through during the stroke. So flushLayers now
+   * runs the full multi-layer composite path. The cost (4 allocations +
+   * 4 drawImage per move at 4 layers) is negligible at 64×64.
+   *
+   * Kept separate from composite() so callers can be explicit about the
+   * stroke-time-vs-stroke-end distinction even though the implementations
+   * are identical; if a future optimization reintroduces a fast path, only
+   * flushLayers changes.
    */
-  flushLayer(layer: Layer): void {
-    if (this.cachedImageData === null) {
-      this.cachedImageData = new ImageData(
-        new Uint8ClampedArray(SKIN_ATLAS_SIZE * SKIN_ATLAS_SIZE * 4),
-        SKIN_ATLAS_SIZE,
-        SKIN_ATLAS_SIZE,
-      );
-    }
-    this.cachedImageData.data.set(layer.pixels);
-    this.ctx.putImageData(this.cachedImageData, 0, 0);
-    this.dirty = true;
+  flushLayers(layers: readonly Layer[]): void {
+    this.composite(layers);
   }
 
   /**

@@ -150,6 +150,7 @@ export function PlayerModel({
   const commitToRecents = useEditorStore((s) => s.commitToRecents);
   const setHoveredPixel = useEditorStore((s) => s.setHoveredPixel);
   const setActiveColor = useEditorStore((s) => s.setActiveColor);
+  const layers = useEditorStore((s) => s.layers);
 
   const altHeldRef = useAltHeld();
 
@@ -271,6 +272,7 @@ export function PlayerModel({
       const ctx: StrokeContext = {
         tool: activeTool,
         layer,
+        layers,
         variant,
         textureManager,
         activeColorHex,
@@ -302,6 +304,7 @@ export function PlayerModel({
       activeColorHex,
       textureManager,
       layer,
+      layers,
       variant,
       brushSize,
       mirrorEnabled,
@@ -366,6 +369,7 @@ export function PlayerModel({
       const ctx: StrokeContext = {
         tool: activeTool,
         layer,
+        layers,
         variant,
         textureManager,
         activeColorHex,
@@ -382,6 +386,7 @@ export function PlayerModel({
       setHoveredPixel,
       textureManager,
       layer,
+      layers,
       variant,
       activeColorHex,
       brushSize,
@@ -399,10 +404,10 @@ export function PlayerModel({
       // Authoritative multi-layer composite at stroke end — mirrors
       // ViewportUV's M3 pattern (flushLayer fast path during stroke,
       // full composite at pointer-up).
-      textureManager.composite([layer]);
+      textureManager.composite(layers);
       markDirty?.();
     }
-  }, [textureManager, layer, markDirty]);
+  }, [textureManager, layer, layers, markDirty]);
 
   const handlePointerOut = useCallback(() => {
     if (

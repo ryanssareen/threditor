@@ -23,12 +23,34 @@ function createMockCanvas(): HTMLCanvasElement {
   return { width: 0, height: 0 } as unknown as HTMLCanvasElement;
 }
 
-function createMockCtx(): CanvasRenderingContext2D {
+function createMockCtx(): CanvasRenderingContext2D & {
+  globalAlpha: number;
+  globalCompositeOperation: GlobalCompositeOperation;
+} {
   return {
     imageSmoothingEnabled: true,
+    globalAlpha: 1,
+    globalCompositeOperation: 'source-over',
     clearRect: () => {},
     putImageData: () => {},
-  } as unknown as CanvasRenderingContext2D;
+    drawImage: () => {},
+  } as unknown as CanvasRenderingContext2D & {
+    globalAlpha: number;
+    globalCompositeOperation: GlobalCompositeOperation;
+  };
+}
+
+/** Build a TM with injected mocks for main + scratch ctx (M6). */
+function makeTm(
+  mainCtx?: CanvasRenderingContext2D,
+  scratchCtx?: CanvasRenderingContext2D,
+): TextureManager {
+  return new TextureManager(
+    createMockCanvas(),
+    mainCtx ?? createMockCtx(),
+    createMockCanvas(),
+    scratchCtx ?? createMockCtx(),
+  );
 }
 
 describe('TextureManager', () => {
@@ -70,7 +92,7 @@ describe('TextureManager', () => {
   it('construction with mocks sets canvas dimensions', () => {
     const canvas = createMockCanvas();
     const ctx = createMockCtx();
-    const tm = new TextureManager(canvas, ctx);
+    const tm = new TextureManager(canvas, ctx, createMockCanvas(), createMockCtx());
     expect(canvas.width).toBe(64);
     expect(canvas.height).toBe(64);
     tm.dispose();
@@ -78,26 +100,26 @@ describe('TextureManager', () => {
 
   it('forces imageSmoothingEnabled to false on ctx', () => {
     const ctx = createMockCtx();
-    const tm = new TextureManager(createMockCanvas(), ctx);
+    const tm = makeTm(ctx);
     expect(ctx.imageSmoothingEnabled).toBe(false);
     tm.dispose();
   });
 
   it('getTexture() returns a three.js CanvasTexture', () => {
-    const tm = new TextureManager(createMockCanvas(), createMockCtx());
+    const tm = makeTm();
     expect(tm.getTexture()).toBeInstanceOf(CanvasTexture);
     tm.dispose();
   });
 
   it('getContext() returns the injected ctx', () => {
     const ctx = createMockCtx();
-    const tm = new TextureManager(createMockCanvas(), ctx);
+    const tm = makeTm(ctx);
     expect(tm.getContext()).toBe(ctx);
     tm.dispose();
   });
 
   it('rAF coalescing — 10 markDirty() calls flip needsUpdate at most once per frame', () => {
-    const tm = new TextureManager(createMockCanvas(), createMockCtx());
+    const tm = makeTm();
     const texture = tm.getTexture();
     const startVersion = texture.version;
 
@@ -126,101 +148,168 @@ describe('TextureManager', () => {
     const ctx = createMockCtx();
     const clearSpy = vi.fn();
     ctx.clearRect = clearSpy;
-    const tm = new TextureManager(createMockCanvas(), ctx);
+    const tm = makeTm(ctx);
     tm.composite([]);
     expect(clearSpy).toHaveBeenCalledWith(0, 0, 64, 64);
     tm.dispose();
   });
 
-  it('composite([visible layer]) calls putImageData once', () => {
+  it('composite([visible layer]) blits scratch via putImageData + drawImage on main (M6 D1)', () => {
     const ctx = createMockCtx();
-    const putSpy = vi.fn();
-    ctx.putImageData = putSpy;
-    const tm = new TextureManager(createMockCanvas(), ctx);
+    const scratchCtx = createMockCtx();
+    const drawSpy = vi.fn();
+    const scratchPutSpy = vi.fn();
+    ctx.drawImage = drawSpy;
+    scratchCtx.putImageData = scratchPutSpy;
+    const tm = makeTm(ctx, scratchCtx);
     const pixels = new Uint8ClampedArray(64 * 64 * 4);
     const layer: Layer = {
-      id: 'test',
-      name: 'test',
-      visible: true,
-      opacity: 1,
-      blendMode: 'normal',
-      pixels,
+      id: 'test', name: 'test', visible: true, opacity: 1, blendMode: 'normal', pixels,
     };
     tm.composite([layer]);
-    expect(putSpy).toHaveBeenCalledTimes(1);
+    expect(scratchPutSpy).toHaveBeenCalledTimes(1);
+    expect(drawSpy).toHaveBeenCalledTimes(1);
     tm.dispose();
   });
 
-  it('composite([invisible layer]) skips the layer', () => {
+  it('composite([invisible layer]) skips both putImageData and drawImage', () => {
     const ctx = createMockCtx();
-    const putSpy = vi.fn();
-    ctx.putImageData = putSpy;
-    const tm = new TextureManager(createMockCanvas(), ctx);
+    const scratchCtx = createMockCtx();
+    const drawSpy = vi.fn();
+    const scratchPutSpy = vi.fn();
+    ctx.drawImage = drawSpy;
+    scratchCtx.putImageData = scratchPutSpy;
+    const tm = makeTm(ctx, scratchCtx);
     const pixels = new Uint8ClampedArray(64 * 64 * 4);
     const layer: Layer = {
-      id: 'test',
-      name: 'test',
-      visible: false,
-      opacity: 1,
-      blendMode: 'normal',
-      pixels,
+      id: 'test', name: 'test', visible: false, opacity: 1, blendMode: 'normal', pixels,
     };
     tm.composite([layer]);
-    expect(putSpy).toHaveBeenCalledTimes(0);
+    expect(scratchPutSpy).not.toHaveBeenCalled();
+    expect(drawSpy).not.toHaveBeenCalled();
+    tm.dispose();
+  });
+
+  it('composite([opacity=0 layer]) skips drawImage (fast path)', () => {
+    const ctx = createMockCtx();
+    const drawSpy = vi.fn();
+    ctx.drawImage = drawSpy;
+    const tm = makeTm(ctx);
+    const layer: Layer = {
+      id: 'a', name: 'a', visible: true, opacity: 0, blendMode: 'normal',
+      pixels: new Uint8ClampedArray(64 * 64 * 4),
+    };
+    tm.composite([layer]);
+    expect(drawSpy).not.toHaveBeenCalled();
+    tm.dispose();
+  });
+
+  it('composite() threads layer.opacity through globalAlpha on main ctx', () => {
+    const ctx = createMockCtx();
+    let observedAlpha = -1;
+    ctx.drawImage = () => { observedAlpha = ctx.globalAlpha; };
+    const tm = makeTm(ctx);
+    const layer: Layer = {
+      id: 'a', name: 'a', visible: true, opacity: 0.42, blendMode: 'normal',
+      pixels: new Uint8ClampedArray(64 * 64 * 4),
+    };
+    tm.composite([layer]);
+    expect(observedAlpha).toBe(0.42);
+    tm.dispose();
+  });
+
+  it('composite() threads layer.blendMode through globalCompositeOperation', () => {
+    const modes: Array<[Layer['blendMode'], GlobalCompositeOperation]> = [
+      ['normal', 'source-over'],
+      ['multiply', 'multiply'],
+      ['overlay', 'overlay'],
+      ['screen', 'screen'],
+    ];
+    for (const [blendMode, expected] of modes) {
+      const ctx = createMockCtx();
+      let observed: GlobalCompositeOperation | null = null;
+      ctx.drawImage = () => { observed = ctx.globalCompositeOperation; };
+      const tm = makeTm(ctx);
+      const layer: Layer = {
+        id: 'a', name: 'a', visible: true, opacity: 1, blendMode,
+        pixels: new Uint8ClampedArray(64 * 64 * 4),
+      };
+      tm.composite([layer]);
+      expect(observed).toBe(expected);
+      tm.dispose();
+    }
+  });
+
+  it('composite() resets globalAlpha + globalCompositeOperation after the blit', () => {
+    const ctx = createMockCtx();
+    const tm = makeTm(ctx);
+    const layer: Layer = {
+      id: 'a', name: 'a', visible: true, opacity: 0.3, blendMode: 'multiply',
+      pixels: new Uint8ClampedArray(64 * 64 * 4),
+    };
+    tm.composite([layer]);
+    expect(ctx.globalAlpha).toBe(1);
+    expect(ctx.globalCompositeOperation).toBe('source-over');
+    tm.dispose();
+  });
+
+  it('composite() draws each visible layer in order (bottom-to-top)', () => {
+    const ctx = createMockCtx();
+    const calls: string[] = [];
+    ctx.drawImage = () => {
+      calls.push(`alpha=${ctx.globalAlpha}|op=${ctx.globalCompositeOperation}`);
+    };
+    const tm = makeTm(ctx);
+    const a: Layer = {
+      id: 'a', name: 'a', visible: true, opacity: 1, blendMode: 'normal',
+      pixels: new Uint8ClampedArray(64 * 64 * 4),
+    };
+    const b: Layer = {
+      id: 'b', name: 'b', visible: true, opacity: 0.5, blendMode: 'multiply',
+      pixels: new Uint8ClampedArray(64 * 64 * 4),
+    };
+    tm.composite([a, b]);
+    expect(calls).toEqual([
+      'alpha=1|op=source-over',
+      'alpha=0.5|op=multiply',
+    ]);
     tm.dispose();
   });
 
   it('dispose() is idempotent — calling twice does not throw', () => {
-    const tm = new TextureManager(createMockCanvas(), createMockCtx());
+    const tm = makeTm();
     tm.dispose();
     expect(() => tm.dispose()).not.toThrow();
   });
 
   it('after dispose(), markDirty() accepts the call without throwing', () => {
-    const tm = new TextureManager(createMockCanvas(), createMockCtx());
+    const tm = makeTm();
     tm.dispose();
     expect(() => tm.markDirty()).not.toThrow();
   });
 
-  it('flushLayer() calls putImageData on each call without clearRect', () => {
+  it('flushLayers() runs the composite pipeline (scratch putImageData + main drawImage)', () => {
+    // M6: flushLayers is the stroke-time path; after D1 it is a full
+    // composite (no fast path) so opacity/blend on non-top layers render
+    // correctly during strokes.
     const ctx = createMockCtx();
-    const putSpy = vi.fn();
-    const clearSpy = vi.fn();
-    ctx.putImageData = putSpy;
-    ctx.clearRect = clearSpy;
-    const tm = new TextureManager(createMockCanvas(), ctx);
-    const pixels = new Uint8ClampedArray(64 * 64 * 4);
+    const scratchCtx = createMockCtx();
+    const drawSpy = vi.fn();
+    const scratchPutSpy = vi.fn();
+    ctx.drawImage = drawSpy;
+    scratchCtx.putImageData = scratchPutSpy;
+    const tm = makeTm(ctx, scratchCtx);
     const layer: Layer = {
-      id: 'test', name: 'test', visible: true, opacity: 1, blendMode: 'normal', pixels,
+      id: 'test', name: 'test', visible: true, opacity: 1, blendMode: 'normal',
+      pixels: new Uint8ClampedArray(64 * 64 * 4),
     };
 
-    tm.flushLayer(layer);
-    tm.flushLayer(layer);
-    tm.flushLayer(layer);
+    tm.flushLayers([layer]);
+    tm.flushLayers([layer]);
+    tm.flushLayers([layer]);
 
-    expect(putSpy).toHaveBeenCalledTimes(3);
-    // flushLayer must NOT call clearRect — composite() owns the full clear+blit cycle
-    expect(clearSpy).not.toHaveBeenCalled();
-    tm.dispose();
-  });
-
-  it('flushLayer() reuses the same ImageData across calls (cached allocation)', () => {
-    const ctx = createMockCtx();
-    const seenImageDataInstances = new Set<object>();
-    ctx.putImageData = (imageData: ImageData) => {
-      seenImageDataInstances.add(imageData);
-    };
-    const tm = new TextureManager(createMockCanvas(), ctx);
-    const pixels = new Uint8ClampedArray(64 * 64 * 4);
-    const layer: Layer = {
-      id: 'test', name: 'test', visible: true, opacity: 1, blendMode: 'normal', pixels,
-    };
-
-    tm.flushLayer(layer);
-    tm.flushLayer(layer);
-    tm.flushLayer(layer);
-
-    expect(seenImageDataInstances.size).toBe(1);
+    expect(scratchPutSpy).toHaveBeenCalledTimes(3);
+    expect(drawSpy).toHaveBeenCalledTimes(3);
     tm.dispose();
   });
 });

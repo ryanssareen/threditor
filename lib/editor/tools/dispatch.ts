@@ -27,7 +27,19 @@ import { pickColorAt } from './picker';
 
 export type StrokeContext = {
   tool: ToolId;
+  /**
+   * The active layer receives every stamp. Tools mutate `layer.pixels`
+   * directly; the store's identity doesn't change (M6 keeps pixel writes
+   * off the store per the zero-alloc pointer hot-path invariant).
+   */
   layer: Layer;
+  /**
+   * M6: full layers array for the composite pipeline. Flushes during a
+   * stroke need the whole stack so opacity/blend on non-top layers
+   * render correctly. The array is the store's reference — mutations to
+   * `layer.pixels` show up here because `layer` is one of the entries.
+   */
+  layers: readonly Layer[];
   variant: SkinVariant;
   textureManager: TextureManager;
   activeColorHex: string;
@@ -45,7 +57,7 @@ export type StrokeContext = {
  * because commitToRecents is idempotent with same-color head dedup).
  */
 export function strokeStart(ctx: StrokeContext, x: number, y: number): boolean {
-  const { tool, layer, variant, textureManager, activeColorHex, brushSize, mirrorEnabled } = ctx;
+  const { tool, layer, layers, variant, textureManager, activeColorHex, brushSize, mirrorEnabled } = ctx;
 
   const hex = activeColorHex;
   const r = (hexDigit(hex, 1) << 4) | hexDigit(hex, 2);
@@ -83,7 +95,7 @@ export function strokeStart(ctx: StrokeContext, x: number, y: number): boolean {
     return false;
   }
 
-  if (changed) textureManager.flushLayer(layer);
+  if (changed) textureManager.flushLayers(layers);
   return changed;
 }
 
@@ -99,7 +111,7 @@ export function strokeContinue(
   toX: number,
   toY: number,
 ): void {
-  const { tool, layer, variant, textureManager, activeColorHex, brushSize, mirrorEnabled } = ctx;
+  const { tool, layer, layers, variant, textureManager, activeColorHex, brushSize, mirrorEnabled } = ctx;
 
   if (tool === 'bucket' || tool === 'picker') return;
 
@@ -128,7 +140,7 @@ export function strokeContinue(
     }
   }
 
-  textureManager.flushLayer(layer);
+  textureManager.flushLayers(layers);
 }
 
 /**

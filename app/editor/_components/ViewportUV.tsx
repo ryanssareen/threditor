@@ -70,6 +70,7 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
   const setActiveColor = useEditorStore((s) => s.setActiveColor);
   const mirrorEnabled = useEditorStore((s) => s.mirrorEnabled);
   const variant = useEditorStore((s) => s.variant);
+  const layers = useEditorStore((s) => s.layers);
 
   const altHeldRef = useAltHeld();
 
@@ -301,6 +302,7 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       const ctx: StrokeContext = {
         tool: activeTool,
         layer,
+        layers,
         variant,
         textureManager,
         activeColorHex: activeColor.hex,
@@ -331,6 +333,7 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       pointerToAtlas,
       activeColor.hex,
       layer,
+      layers,
       brushSize,
       textureManager,
       commitToRecents,
@@ -394,6 +397,7 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       const ctx: StrokeContext = {
         tool: activeTool,
         layer,
+        layers,
         variant,
         textureManager,
         activeColorHex: activeColor.hex,
@@ -416,6 +420,7 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       pointerToAtlas,
       activeColor.hex,
       layer,
+      layers,
       brushSize,
       textureManager,
       variant,
@@ -444,11 +449,11 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     if (wasPainting) {
       // Authoritative multi-layer composite at stroke end. During the stroke
-      // flushLayer() keeps the canvas up to date with zero per-move allocs.
-      textureManager.composite([layer]);
+      // flushLayers() keeps the canvas up to date (M6: full composite path).
+      textureManager.composite(layers);
       markDirty();
     }
-  }, [textureManager, layer, markDirty]);
+  }, [textureManager, layers, markDirty]);
 
   const cursor = isSpaceHeld ? 'grab' : cursorForTool(activeTool);
   const showGrid = uvZoom >= GRID_THRESHOLD;
