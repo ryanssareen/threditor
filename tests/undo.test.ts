@@ -69,6 +69,12 @@ function makeActions(layers: Layer[], opts?: { strokeActive?: () => boolean }): 
     },
     recomposite: () => { state.recomposites += 1; },
     strokeActive: opts?.strokeActive ?? (() => false),
+    applyTemplateSnapshot: (snapshot) => {
+      // Mirror the store's applyTemplateState atomic swap on the
+      // in-memory test state. Layer identity is whatever the snapshot
+      // supplies (tests construct these directly).
+      state.layers = snapshot.layers;
+    },
   };
   return { actions, state };
 }
