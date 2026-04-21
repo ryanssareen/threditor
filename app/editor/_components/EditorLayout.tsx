@@ -4,17 +4,19 @@
  * M3: responsive layout coordinator.
  * M6: multi-layer aware. Resolves `activeLayer` from the store and
  * threads it to paint surfaces. Owns the `TextureManager` (via the
- * bundle hook), the persistence subscription, and (forthcoming Unit 7)
- * the UndoStack + Cmd+Z keydown listener.
+ * bundle hook), the persistence subscription, the UndoStack, and the
+ * window-level Cmd/Ctrl+Z / Cmd+Shift+Z keydown listener.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { initPersistence, loadDocument } from '@/lib/editor/persistence';
 import { useEditorStore } from '@/lib/editor/store';
+import { UndoStack, writeLayerRegion, type EditorActions } from '@/lib/editor/undo';
 import { useTextureManagerBundle } from '@/lib/editor/use-texture-manager';
-import type { Layer } from '@/lib/editor/types';
+import type { Layer, Stroke } from '@/lib/editor/types';
 import { EditorCanvas } from './EditorCanvas';
+import type { LayerLifecycleCommand } from './LayerPanel';
 import { Sidebar } from './Sidebar';
 import { ViewportUV } from './ViewportUV';
 
@@ -40,6 +42,17 @@ export function EditorLayout() {
   // markDirty is threaded as a prop to ViewportUV so the persistence
   // singleton is not module-scope.
   const markDirtyRef = useRef<() => void>(() => {});
+
+  // UndoStack is scoped to the editor session. Reload = empty stack
+  // (matches Photoshop/Figma/Procreate web behavior, plan §D3).
+  const undoStackRef = useRef<UndoStack | null>(null);
+  if (undoStackRef.current === null) undoStackRef.current = new UndoStack();
+  const undoStack = undoStackRef.current;
+
+  // Stable bundle ref so the keydown handler reads the current bundle
+  // without depending on it (which would rebind the listener).
+  const bundleRef = useRef(bundle);
+  bundleRef.current = bundle;
 
   // M4 Unit 0 (P1 from M3 review): hydrationPending gates paint interaction
   // until loadDocument() resolves.
@@ -131,6 +144,93 @@ export function EditorLayout() {
     markDirtyRef.current();
   }, [bundle, layers]);
 
+  // ── Undo/redo wiring ─────────────────────────────────────────────────
+
+  const buildActions = useCallback((): EditorActions => {
+    const store = useEditorStore.getState();
+    return {
+      getLayers: () => layersRef.current,
+      setLayerPixelRegion: (layerId, bbox, region) => {
+        writeLayerRegion(layersRef.current, layerId, bbox, region);
+      },
+      insertLayerAt: (layer, index) => store.insertLayerAt(layer, index),
+      deleteLayer: (id) => {
+        store.deleteLayer(id);
+      },
+      reorderLayers: (from, to) => store.reorderLayers(from, to),
+      setLayerName: (id, name) => store.renameLayer(id, name),
+      setLayerOpacity: (id, opacity) => store.setLayerOpacity(id, opacity),
+      setLayerBlendMode: (id, mode) => store.setLayerBlendMode(id, mode),
+      setLayerVisible: (id, visible) => store.setLayerVisible(id, visible),
+      recomposite: () => {
+        const b = bundleRef.current;
+        if (b === null) return;
+        b.textureManager.composite(layersRef.current);
+        markDirtyRef.current();
+      },
+      strokeActive: () => useEditorStore.getState().strokeActive,
+    };
+  }, []);
+
+  const handleStrokeCommit = useCallback(
+    (stroke: Stroke) => {
+      undoStack.push({ kind: 'stroke', stroke });
+    },
+    [undoStack],
+  );
+
+  const handleStrokeActive = useCallback((active: boolean) => {
+    useEditorStore.getState().setStrokeActive(active);
+  }, []);
+
+  const handleLayerUndoPush = useCallback(
+    (cmd: LayerLifecycleCommand) => {
+      undoStack.push(cmd);
+    },
+    [undoStack],
+  );
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      // Focus guard: shortcuts should never fire from within inputs,
+      // textareas, contenteditable, or role=application widgets (matches
+      // the Toolbar shortcut convention introduced in M3).
+      const target = e.target as HTMLElement | null;
+      if (target !== null && target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        if (target.isContentEditable) return;
+        if (target.getAttribute('role') === 'application') return;
+      }
+
+      // Modifier guard: Meta XOR Ctrl must be held; Alt blocks.
+      const hasCmd = e.metaKey || e.ctrlKey;
+      if (!hasCmd) return;
+      if (e.metaKey && e.ctrlKey) return;
+      if (e.altKey) return;
+
+      const key = e.key.toLowerCase();
+      if (key !== 'z') return;
+
+      // Block during an active stroke (D10).
+      if (useEditorStore.getState().strokeActive) {
+        e.preventDefault();
+        return;
+      }
+
+      e.preventDefault();
+      const actions = buildActions();
+      if (e.shiftKey) {
+        undoStack.redo(actions);
+      } else {
+        undoStack.undo(actions);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [undoStack, buildActions]);
+
   return (
     <div className="flex h-dvh w-dvw flex-col sm:flex-row">
       <div className="relative h-[30vh] w-full shrink-0 sm:h-full sm:w-auto sm:flex-1">
@@ -141,6 +241,8 @@ export function EditorLayout() {
           layer={activeLayer ?? undefined}
           markDirty={() => markDirtyRef.current()}
           hydrationPending={hydrationPending}
+          onStrokeCommit={handleStrokeCommit}
+          onStrokeActive={handleStrokeActive}
         />
       </div>
 
@@ -151,6 +253,8 @@ export function EditorLayout() {
             layer={activeLayer}
             markDirty={() => markDirtyRef.current()}
             hydrationPending={hydrationPending}
+            onStrokeCommit={handleStrokeCommit}
+            onStrokeActive={handleStrokeActive}
             className="h-full w-full"
           />
         ) : null}
@@ -160,7 +264,7 @@ export function EditorLayout() {
         className="h-[30vh] w-full shrink-0 border-t border-ui-border bg-ui-surface sm:h-full sm:w-[280px] sm:border-l sm:border-t-0"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}
       >
-        <Sidebar className="h-full w-full" />
+        <Sidebar className="h-full w-full" onLayerUndoPush={handleLayerUndoPush} />
       </aside>
     </div>
   );
