@@ -40,11 +40,13 @@ const DEBOUNCE_MS = 500;
 
 export type InitPersistenceParams = {
   /**
-   * Accessor for the current in-memory Layer. The Layer is owned by
-   * EditorLayout's `useTextureManagerBundle` hook; persistence reads the
-   * freshest pixels at flush time via this getter.
+   * Accessor for the current in-memory layers. The layers array is owned
+   * by the editor store; persistence reads the freshest array at flush
+   * time via this getter so pixel mutations (which happen in place and
+   * don't trigger store updates) are captured.
    */
-  getLayer: () => Layer | null;
+  getLayers: () => Layer[];
+  getActiveLayerId: () => string;
   /**
    * Original `createdAt` from the loaded document, if any. When provided,
    * every subsequent write preserves this timestamp so the document's
@@ -62,7 +64,8 @@ export type InitPersistenceReturn = {
 };
 
 export function initPersistence({
-  getLayer,
+  getLayers,
+  getActiveLayerId,
   createdAt,
 }: InitPersistenceParams): InitPersistenceReturn {
   const { setSavingState } = useEditorStore.getState();
@@ -71,14 +74,14 @@ export function initPersistence({
   let dirtyWhilePending = false;
   let disposed = false;
 
-  const buildDocument = (layer: Layer): SkinDocument => {
+  const buildDocument = (layers: Layer[], activeLayerId: string): SkinDocument => {
     const { variant } = useEditorStore.getState();
     const now = Date.now();
     return {
       id: 'm3-default',
       variant,
-      layers: [layer],
-      activeLayerId: layer.id,
+      layers,
+      activeLayerId,
       createdAt: createdAt ?? now,
       updatedAt: now,
     };
@@ -101,10 +104,11 @@ export function initPersistence({
     ) {
       return;
     }
-    const layer = getLayer();
-    if (layer === null) return;
+    const layers = getLayers();
+    if (layers.length === 0) return;
+    const activeLayerId = getActiveLayerId();
     try {
-      await set(DOC_KEY, buildDocument(layer));
+      await set(DOC_KEY, buildDocument(layers, activeLayerId));
     } catch (err) {
       const errName =
         typeof err === 'object' && err !== null && 'name' in err

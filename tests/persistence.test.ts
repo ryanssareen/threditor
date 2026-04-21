@@ -49,7 +49,7 @@ describe('persistence', () => {
   it('probe success transitions savingState from pending to enabled', async () => {
     setSpy.mockResolvedValue(undefined);
 
-    const { cleanup } = initPersistence({ getLayer: () => mockLayer });
+    const { cleanup } = initPersistence({ getLayers: () => [mockLayer], getActiveLayerId: () => mockLayer.id });
 
     // Flush the probe IIFE microtask chain.
     await Promise.resolve();
@@ -65,7 +65,7 @@ describe('persistence', () => {
   it('probe failure transitions savingState from pending to disabled:private', async () => {
     setSpy.mockRejectedValue(new Error('IDB unavailable'));
 
-    const { cleanup } = initPersistence({ getLayer: () => mockLayer });
+    const { cleanup } = initPersistence({ getLayers: () => [mockLayer], getActiveLayerId: () => mockLayer.id });
 
     await Promise.resolve();
     await Promise.resolve();
@@ -85,7 +85,7 @@ describe('persistence', () => {
     const probeGate = new Promise<void>((res) => { resolveProbe = res; });
     setSpy.mockImplementation(() => probeGate);
 
-    const { markDirty } = initPersistence({ getLayer: () => mockLayer });
+    const { markDirty } = initPersistence({ getLayers: () => [mockLayer], getActiveLayerId: () => mockLayer.id });
 
     // Call markDirty before the probe has had a chance to resolve.
     markDirty();
@@ -132,7 +132,7 @@ describe('persistence', () => {
       return Promise.reject({ name: 'QuotaExceededError' });
     });
 
-    const { markDirty, cleanup } = initPersistence({ getLayer: () => mockLayer });
+    const { markDirty, cleanup } = initPersistence({ getLayers: () => [mockLayer], getActiveLayerId: () => mockLayer.id });
 
     // Let the probe resolve.
     await Promise.resolve();
@@ -159,7 +159,7 @@ describe('persistence', () => {
 
     const removeListenerSpy = vi.spyOn(window, 'removeEventListener');
 
-    const { cleanup } = initPersistence({ getLayer: () => mockLayer });
+    const { cleanup } = initPersistence({ getLayers: () => [mockLayer], getActiveLayerId: () => mockLayer.id });
 
     // Let probe settle so state is clean.
     await Promise.resolve();
@@ -211,7 +211,7 @@ describe('persistence', () => {
     vi.useFakeTimers();
     setSpy.mockResolvedValue(undefined);
 
-    const { markDirty, cleanup } = initPersistence({ getLayer: () => mockLayer });
+    const { markDirty, cleanup } = initPersistence({ getLayers: () => [mockLayer], getActiveLayerId: () => mockLayer.id });
 
     // Let probe resolve.
     await Promise.resolve();
@@ -243,7 +243,7 @@ describe('persistence', () => {
 
     // SCENARIO A: initPersistence installed BEFORE hydration.
     // The probe completes, then a write fires with blank pixels.
-    const { markDirty: markDirtyA, cleanup: cleanupA } = initPersistence({ getLayer: () => layer });
+    const { markDirty: markDirtyA, cleanup: cleanupA } = initPersistence({ getLayers: () => [layer], getActiveLayerId: () => layer.id });
     await Promise.resolve(); await Promise.resolve(); // probe settles → 'enabled'
     markDirtyA();
     await vi.advanceTimersByTimeAsync(600);
@@ -258,7 +258,7 @@ describe('persistence', () => {
 
     // SCENARIO B: hydrate first, THEN install initPersistence.
     layer.pixels[0] = 42; // simulate hydrated pixel
-    const { markDirty: markDirtyB, cleanup: cleanupB } = initPersistence({ getLayer: () => layer });
+    const { markDirty: markDirtyB, cleanup: cleanupB } = initPersistence({ getLayers: () => [layer], getActiveLayerId: () => layer.id });
     await Promise.resolve(); await Promise.resolve(); // probe settles → 'enabled'
     markDirtyB();
     await vi.advanceTimersByTimeAsync(600);
@@ -276,7 +276,7 @@ describe('persistence', () => {
     vi.useFakeTimers();
     setSpy.mockResolvedValue(undefined);
 
-    const { markDirty, cleanup } = initPersistence({ getLayer: () => null });
+    const { markDirty, cleanup } = initPersistence({ getLayers: () => [], getActiveLayerId: () => "" });
 
     // Let probe resolve → savingState: enabled.
     await Promise.resolve();
