@@ -27,7 +27,7 @@ import {
 } from '@/lib/three/constants';
 import { PlayerModel } from '@/lib/three/PlayerModel';
 import { CursorDecal } from './CursorDecal';
-import type { Layer, SkinVariant } from '@/lib/editor/types';
+import type { Layer, SkinVariant, Stroke } from '@/lib/editor/types';
 import type { TextureManager } from '@/lib/editor/texture';
 
 type Props = {
@@ -37,6 +37,8 @@ type Props = {
   layer?: Layer;
   markDirty?: () => void;
   hydrationPending?: boolean;
+  onStrokeCommit?: (stroke: Stroke) => void;
+  onStrokeActive?: (active: boolean) => void;
 };
 
 export function EditorCanvas({
@@ -46,6 +48,8 @@ export function EditorCanvas({
   layer,
   markDirty,
   hydrationPending,
+  onStrokeCommit,
+  onStrokeActive,
 }: Props) {
   return (
     <div className="relative h-full w-full">
@@ -85,6 +89,8 @@ export function EditorCanvas({
             layer={layer}
             markDirty={markDirty}
             hydrationPending={hydrationPending}
+            onStrokeCommit={onStrokeCommit}
+            onStrokeActive={onStrokeActive}
           />
         ) : null}
         <CursorDecal />

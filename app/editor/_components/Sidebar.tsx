@@ -4,10 +4,15 @@ import type { BrushSize, SavingState } from '@/lib/editor/store';
 import { useEditorStore } from '@/lib/editor/store';
 import type { SkinVariant } from '@/lib/editor/types';
 import { ColorPicker } from './ColorPicker';
-import { LayerPanel } from './LayerPanel';
+import { LayerPanel, type LayerLifecycleCommand } from './LayerPanel';
 import { Toolbar } from './Toolbar';
 
-export function Sidebar({ className }: { className?: string }) {
+type SidebarProps = {
+  className?: string;
+  onLayerUndoPush?: (cmd: LayerLifecycleCommand) => void;
+};
+
+export function Sidebar({ className, onLayerUndoPush }: SidebarProps) {
   return (
     <div
       className={`flex h-full w-full flex-col gap-4 overflow-y-auto p-4 ${className ?? ''}`}
@@ -16,7 +21,7 @@ export function Sidebar({ className }: { className?: string }) {
       <VariantToggle />
       <BrushSizeRadio />
       <ColorPicker />
-      <LayerPanel />
+      <LayerPanel onUndoPush={onLayerUndoPush} />
       <SavingStatusChip />
     </div>
   );
