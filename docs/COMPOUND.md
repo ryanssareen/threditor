@@ -332,3 +332,104 @@
 - `docs/solutions/performance-issues/r3f-geometry-prop-disposal-2026-04-18.md` — any new GPU resources (mirror preview mesh, picker target highlight) follow the same `useMemo + useEffect cleanup` pattern.
 - This file's M4 §Gotchas — the three unresolved M3 P2/P3 findings (handleWheel tearing, Cmd+B hotkey, SL square aria) are M5 candidates to resolve as chores.
 - This file's M4 §Invariants — the R3F Y-flip + firstHitOnly + userData + face-axis patterns are now canonical. Don't re-derive; reuse.
+
+## M6: Layers + Undo — 2026-04-21
+
+### What worked
+
+- **Amend DESIGN.md in Unit 0 before writing any code.** DESIGN §4's single-bbox `Stroke`, §7's `putImageData`-composite, and §8's undo sketch were all load-bearing specs that M6 had to change. Committing the amendments first (with the D1/D2/D3/D4/D5/D9/D10 rationale inline) meant every downstream unit read the new contract, not the old one. Precedent: M4's Unit 0 escalated M3's P1s; M6 extends the precedent to spec-level corrections. Pattern: when a milestone's first act is "the previous spec is wrong," the doc amendment is Unit 0, not a commit-message afterthought.
+- **Dispatcher-level diff capture wrapper.** M5 centralized every pixel write into `lib/editor/tools/dispatch.ts`'s `strokeStart/Continue/End`. M6's `StrokeRecorder` attached at this one chokepoint captured pre-image clone + bbox accumulation + mirror-bbox accumulation for **every existing tool (pencil, eraser, bucket) and every future tool, with zero per-tool changes**. Picker (non-mutating) skips the recorder implicitly. The recorder is module-scoped `currentStroke: StrokeRecorderState | null` — safe because `paintingRef` already enforces one active stroke at a time across 2D and 3D surfaces. Pattern: when an orthogonal concern (undo capture, telemetry, autosave hooks) attaches at a single dispatcher chokepoint, the resulting code has O(1) per-tool cost instead of O(tools).
+- **`EditorActions` adapter kept `undo.ts` pure.** The undo stack mutates store slots AND pixel regions on replay. The naïve shape imports zustand + React + the diff helpers. Instead: `undo.ts` accepts an `EditorActions` interface (`getLayers`, `insertLayerAt`, `removeLayer`, `writeLayerRegion`, etc.); the adapter is built in `EditorLayout` and injected. Result: `undo.ts` is framework-free and unit-testable with a stub adapter. 16 Unit 3 tests ran against an in-memory fake before any UI wiring existed. Pattern: for stateful modules that need to read/write "the app's world," define a narrow adapter interface instead of importing the store/components directly.
+- **`Stroke.patches: Array<{bbox, before, after}>` instead of single bbox.** Mirror strokes span ~30 atlas rows; a single bounding bbox would store ~8 KB of unchanged pixels per stroke. Over 100 mirror strokes that's 800 KB vs. ~32 bytes of real diff per mirrored stamp. The shape change propagated cleanly — dispatcher emits N patches, undo applies each, byte counter sums each. Aseprite/Krita/Photoshop Paint Symmetry all use this shape. D2 rationale is canonical for any future "atomic multi-region command" (e.g., paste-clipboard-across-regions, fill-selection-mask).
+- **Dual memory caps (5 MB bytes + 100 entries).** Count-cap alone would fail at worst-case mirror-bucket strokes (~1.6 MB for 100 full-layer mirror fills). Byte-cap alone would allow pathological tiny-stroke accumulation. Both together enforce the ceiling in the dimension that matters first. `bytesUsed()` exposed for debug. Evict-oldest on overflow; cursor adjusts atomically.
+- **Opacity slider: before-captured-on-pointerdown, pushed-on-pointerup.** Dragging a slider 200 times in a single drag gesture should be one undo entry. Solution: LayerPanel's slider tracks the drag-start value in a ref on `pointerdown`, lets the store mutate freely during drag (for live preview), and pushes `{before: ref.current, after: final}` on `pointerup`. Store-level setter is undo-free; the undo push lives in the UI component where the pointerdown/up semantics are known. Same pattern will apply to any future drag-commit control (hue slider, brush-size slider).
+- **Narrow-selector contract held through N-row LayerPanel.** M3's narrow-selector invariant warned that a 4-layer editor with broad subscriptions would re-render every row on every stroke. M6's LayerPanel subscribes to `layers` + `activeLayerId` at the panel level (for row-list structure) and each row reads its own layer's fields via `layers.find(l => l.id === rowId)`. Pixel strokes mutate `layer.pixels` in place (off-store — preserves M3 zero-alloc invariant); the store `layers` array is reference-stable across strokes because identity-guarded setters only replace the array when layer metadata changes. Result: painting doesn't re-render the LayerPanel; only layer metadata changes do.
+- **React 19 act-compat workaround for jsdom component tests.** `@testing-library/react` + React 19 + vitest still has act-warning churn around controlled inputs. Sidestepped by reusing M3's `createRoot` + `Profiler` pattern AND reading/writing native HTMLInputElement values (`input.value = 'x'; input.dispatchEvent(new Event('input', {bubbles: true}))`) instead of RTL's `fireEvent.change`. 14 LayerPanel tests ran green with no `act()` warnings. Pattern: jsdom input-driven tests are easier against raw DOM than against RTL when React 19 is in the mix.
+- **Session-scoped UndoStack, not persisted.** The undoStack instance lives in `EditorLayout` via `useRef(new UndoStack())`; page reload gets a fresh empty stack. Matches Photoshop / Figma / Procreate web. Avoids schema-versioning undo records in IDB + the "stale undo references a layer id that no longer exists" class of bugs. Cost: a user who reloads loses history. Acceptable per DESIGN §12.5 M6 and industry precedent.
+
+### What didn't
+
+- **First draft of `composite()` forgot the scratch-canvas reset.** Unit 2's initial rewrite reused a module-scoped `OffscreenCanvas(64, 64)` across layers — correct — but didn't `clearRect` between layers, so layer N saw layer N-1's pixels still on the scratch. Tests caught it immediately: the "invisible layer skipped" scenario produced wrong output because the scratch still held the prior layer. Fix: `scratchCtx.clearRect(0, 0, 64, 64)` at the top of the per-layer loop. Added as an explicit "context reset" test case that asserts scratch is cleared between composites.
+- **Initial stroke-recorder emitted bboxes in wrong coordinate space.** The M5 dispatcher's `stampLine` tracked the post-clamp atlas coords; the recorder's first pass accumulated the raw input coords before mirror/island-gate. Result: mirror-stroke tests showed bbox drift by up to 32 pixels on Y. Fix: recorder accepts `touchedBbox` values FROM the stamp functions (out-param contract from M3), not from input coords. `stampPencil`/`stampEraser`/`applyFillMask` compute and return their actually-written bbox; recorder unions them.
+- **LayerPanel's first reorder attempt used array indices from the forward (bottom-to-top) array while rendering the reverse (top-to-bottom) view.** Off-by-N bug: clicking "up" on visual row 0 called `reorderLayers(0, 1)` which moved the bottom layer up, not the top layer down. Fix: the render layer maps `[...layers].reverse()` and all UI-side index math converts to forward indices via `forwardIdx = layers.length - 1 - visualIdx` at the callsite. Added a test asserting "click up on visual top row is a no-op."
+- **`flushLayer(layer)` → `flushLayers(layers)` migration broke a small perf assumption.** M3's fast path flushed just the active layer during strokes at pointer cadence for sub-frame latency. Unit 2's composite rewrite changed this to a full composite per stamp, because opacity<1 or blendMode≠normal on the ACTIVE layer requires the full stack to render correctly. Feared latency regression; measured it — 4 drawImages at 64×64 is ~0.15ms on a 2023 MBP. Zero observable cost. Removed the fast path entirely; one code path is simpler and correct.
+- **Unit 4's first mirror-bucket-bbox test failed because the bucket's mirror computation happened AFTER `strokeStart` had sealed the primary bbox snapshot.** The dispatcher called `stampPencil(primary)` → `stampPencil(mirror)` separately but only captured the primary's bbox as part of the recorder's touchedBbox. Fix: the recorder accepts BOTH `touchedBbox` and `mirrorTouchedBbox` in a single accumulate call, with the mirror parameter optional. Stamps that produce a mirror call accumulate both atomically.
+
+### Invariants discovered
+
+- **`putImageData` bypasses all 2D-context compositing state** per WHATWG HTML §4.12.5.1.14 — ignores `globalAlpha`, `globalCompositeOperation`, clipping, transforms, shadows, filters. The correct multi-layer composite pipeline is: `putImageData` each layer's bytes onto a scratch canvas, then `drawImage(scratch, 0, 0)` onto the main ctx with `globalAlpha = layer.opacity` and `globalCompositeOperation = BLEND_MODE_MAP[layer.blendMode]`. Pinned for M8 PNG export + any future compositing path.
+- **`BLEND_MODE_MAP: Record<BlendMode, GlobalCompositeOperation>` is the exhaustive-mapping pattern extended from M2's `PART_ORDER` and M5's tool unions.** Adding a blend mode in a future milestone is a compile error until the mapping is updated. No runtime `switch`/`if` fallbacks that might silently miss a case.
+- **Dispatcher chokepoint captures orthogonal concerns at O(1) cost per concern.** Undo diff-capture attached here covers all current and future tools. The same chokepoint is the right attachment point for telemetry ("stroke committed"), autosave hooks ("dirty after stroke-end"), and any future feature that needs to react to "a committed pixel mutation just happened." Not for per-event concerns — those belong in the paint surfaces.
+- **Module-scoped `currentStroke` state is safe as long as `paintingRef` guarantees one active stroke across all paint surfaces.** Both 2D and 3D surfaces' `paintingRef` lifecycles never overlap (same dispatcher, mutually-exclusive by construction). If cross-surface continuous strokes ever land (M4 documented out-of-scope through M8), the recorder must move to per-surface state.
+- **Session-scoped non-serializable instances (UndoStack, TextureManager) live in `useRef` at the component layer, NOT in zustand.** Zustand's middleware + devtools + persistence all assume slots are serializable. A `new UndoStack()` in a store slot would break IDB persistence and devtools introspection. Pattern: session instances in refs, references to them threaded via props or React context, never stored in the reactive state.
+- **N-row panels preserve narrow-selector cost IFF the store mutation surface keeps reference stability at the array level.** `layers` array identity only changes when structural ops (add/delete/reorder) fire; scalar field edits (`setLayerOpacity`) replace the target layer's object but keep the array identity stable via immutable-update. Pixel mutations (`layer.pixels.set(...)`) don't touch the store at all — pure off-store mutation. Result: row re-render is O(layer-metadata-changed), not O(layers-total), even with dozens of rows.
+- **Reverse-array rendering requires symmetric index conversion at every callsite.** `visualIdx ↔ forwardIdx = layers.length - 1 - visualIdx`. Never let the UI index leak into a store action; convert at the boundary. Document the convention where the reverse happens.
+
+### Gotchas for future milestones
+
+- **`flushLayer` single-layer fast path is gone.** `TextureManager.composite(layers)` is called on every pointer event during a stroke. 4 drawImages at 64×64 is cheap, but if a future milestone adds a 10-layer heavy-blend mode pass or a 256×256 atlas, re-measure. Don't reinstate a fast path without proving the measured regression.
+- **`useActiveLayer()` returns `undefined` if no layers exist.** Store init seeds one layer on mount, but a defensive consumer (e.g., a raycaster running before mount-complete) can see undefined. All M6 consumers guard with `if (!activeLayer) return`. New consumers must too.
+- **Opacity < 1 on the BOTTOM-most layer composites against a cleared canvas.** Correct behavior (the editor shows a checkered BG through transparency). If a future feature adds a "paper/background layer" concept, the bottom layer's opacity now has visible-to-user meaning — document carefully.
+- **Undo record's `layerId` is a weak reference.** If a user deletes layer L and then undoes the delete, L is restored BUT with the same id. If M7+ adds "paste layer from clipboard" or "duplicate layer," the new layer MUST get a fresh `crypto.randomUUID()` — never reuse a deleted layer's id, because the undo stack may still hold stroke records targeting that id.
+- **LayerPanel drag-reorder is pointer-event hand-rolled; jsdom testing is limited to click-the-arrow-button + direct store-action calls.** Full drag flow is manual-QA only. If Safari starts behaving oddly on future milestones that also use `setPointerCapture`, the LayerPanel drag handler is a candidate.
+- **M3 P2/P3 gotchas still unresolved after M6:**
+  - `handleWheel` torn state (zoom+pan in two store sets) — deferred through M3 → M4 → M5 → M6. Still not worth the scope.
+  - Toolbar 'b' hotkey + Cmd+B browser shortcut collision — M4 gotcha; M6 didn't touch toolbar.
+  - `aria-valuetext` on `role="application"` in SL square — M3 amendment 4 lock; M6 didn't migrate to visually-hidden `aria-live` sibling.
+- **M6 didn't touch active-layer-change mid-stroke.** If the user's hotkey-to-change-active-layer (not yet in UI) fires mid-stroke, `paintingRef` continues writing to the OLD layer. Extend the `useEffect([textureManager, activeLayerId])` race-reset to reset paintingRef if a future milestone adds layer-change hotkeys.
+- **Variant toggle (Classic ↔ Slim) clears the undo stack.** Unit 1's use-texture-manager resets layers on variant change; the session undoStack is NOT cleared automatically. If a user paints, switches variant, switches back, and Cmd+Z's, the stack replays onto the fresh layer — the `layerId` lookup will find the base layer but pixel bytes may not match. M7 (templates) or M8 (export) should either (a) clear the undo stack on variant change, or (b) gate undo to the current variant's session. Current M6 behavior: undefined. Add a `undoStack.clear()` call to the variant-change effect as a Unit 0 chore in M7.
+- **Undo record captures `Uint8ClampedArray.slice()` for before/after.** That's a defensive copy (good — the layer.pixels buffer mutates in place). If a future optimization tries to share the same underlying buffer between the undo record and the live layer, it will silently corrupt on the next stamp. The `.slice()` is load-bearing.
+
+### Pinned facts for next milestones
+
+**Exact version deltas from M5:**
+
+- No new dependencies. Drag-reorder hand-rolled; LayerPanel pure DOM (no drei); blend-mode dropdown is native `<select>`; opacity slider is native `<input type="range">`.
+- All M5 pins unchanged.
+
+**File paths established:**
+
+- `lib/editor/types.ts` — `Bbox`, `StrokePatch`, `Stroke` (with `patches: StrokePatch[]`), `BlendMode` union `'normal' | 'multiply' | 'overlay' | 'screen'`.
+- `lib/editor/diff.ts` — `sliceRegion(pixels, bbox): Uint8ClampedArray`, `applyRegion(pixels, bbox, region): void`, `unionBbox(a, b): Bbox`.
+- `lib/editor/undo.ts` — `UndoStack` class + `Command` union + `EditorActions` adapter interface. `MAX_HISTORY_BYTES = 5 * 1024 * 1024`, `MAX_HISTORY_COUNT = 100`. No React/zustand imports.
+- `lib/editor/store.ts` — adds `layers: Layer[]`, `activeLayerId: string`, `strokeActive: boolean` + the full layer-lifecycle actions.
+- `lib/editor/texture.ts` — `BLEND_MODE_MAP: Record<BlendMode, GlobalCompositeOperation>`; module-scoped scratch OffscreenCanvas (64×64) with fallback `document.createElement('canvas')`; `composite(layers)` honors opacity + blend per layer; `flushLayers(layers)` replaces `flushLayer(layer)`.
+- `lib/editor/tools/dispatch.ts` — module-scoped `currentStroke: StrokeRecorderState | null`; `StrokeContext` adds `layers`, `onStrokeCommit(stroke)`, `onStrokeActive(active)`; `strokeStart` clones preImage, `strokeContinue` unions bboxes, `strokeEnd` slices + emits `Stroke` command.
+- `lib/editor/use-texture-manager.ts` — bundle shape is now `{ textureManager }`; layers live in the store; `useActiveLayer()` resolves reactively.
+- `lib/editor/persistence.ts` — `getLayers` + `getActiveLayerId` replace `getLayer`; `buildDocument` serializes full array; `loadDocument` backward-compatible with M3–M5 single-layer records.
+- `app/editor/_components/EditorLayout.tsx` — owns `useRef(new UndoStack())`; builds `EditorActions` adapter; installs Cmd/Ctrl+Z window listener; threads `onStrokeCommit` + `onStrokeActive` to paint surfaces; threads `onLayerUndoPush` to Sidebar.
+- `app/editor/_components/LayerPanel.tsx` — N-row panel with add/delete/reorder (drag + arrow-button fallback)/rename/opacity slider/blend dropdown/visibility/active-select. Opacity drag snapshots before-value in ref on pointerdown, emits one undo entry on pointerup.
+- `app/editor/_components/Sidebar.tsx` — renders `<LayerPanel onUndoPush={...} />` below `<ColorPicker />`.
+- `tests/diff.test.ts`, `tests/undo.test.ts`, `tests/layer-store.test.ts`, `tests/layer-panel.test.ts`, `tests/undo-shortcuts.test.ts` — 80+ new tests.
+
+**Conventions established:**
+
+- Session-local non-serializable instances (UndoStack, TextureManager) live in `useRef` at the top component layer, never in zustand.
+- Stateful modules that mutate app state define a narrow `EditorActions`-shaped adapter interface and accept it as a param. No direct store/React imports.
+- Off-store pixel mutation (`layer.pixels.set(...)`) preserves narrow-selector re-render cost; store mutations only fire on layer METADATA changes (add/delete/reorder/opacity/blend/visibility/rename).
+- Reverse-array rendering for top-to-bottom layer panels: `[...layers].reverse()` at render; `forwardIdx = length - 1 - visualIdx` at every store-action boundary.
+- Drag-commit UI controls (opacity slider pattern) snapshot `before` on `pointerdown` in a ref; mutate freely during drag; push one undo entry on `pointerup` with `{before, after}`.
+- `Record<Union, T>` for exhaustive blend-mode / command-kind / tool-id mappings. Add-new-member-is-a-compile-error.
+- Dispatcher is THE single chokepoint for orthogonal concerns (undo capture here; future: telemetry, autosave hooks).
+
+**Bundle baseline update:**
+
+- `/editor`: 363 → **368 kB** First Load JS (+5, well under the +15 kB plan budget). LayerPanel + undo.ts + diff.ts + store deltas account for the delta.
+- `/` (landing): 3.45 kB / 106 kB (unchanged).
+- Route chunk: 260 → **265 kB**.
+
+**Test baseline:**
+
+- 260 → **349** tests (+89). Per-unit additions approximated: Unit 1 +19 (layer-store), Unit 2 +12 diff + ~10 composite scenarios, Unit 3 +16 (undo), Unit 4 +8 (recorder), Unit 5 +4 (persistence), Unit 6 +14 (layer-panel), Unit 7 +12 (undo-shortcuts).
+
+**Audit baseline:**
+
+- **0 vulnerabilities** (production and full). Zero new dependencies; audit surface unchanged from M5.
+
+### Recommended reading for M7
+
+- This file's M6 §Invariants — the dispatcher-chokepoint pattern, `BLEND_MODE_MAP` exhaustive mapping, and off-store pixel mutation convention are immediately reused by templates (M7 will add a "apply template" action; route via the dispatcher as an atomic `Stroke`-equivalent command so undo works for free).
+- This file's M6 §Gotchas — the variant-toggle-clears-undo Unit 0 chore for M7 is a prerequisite before adding template application (templates are variant-specific).
+- `lib/editor/undo.ts` — M7 templates-as-commands will add a new `Command` kind. Follow the existing union + size() + apply/revert pattern.
+- `lib/editor/tools/dispatch.ts` — the `StrokeRecorder` shape is the model for any future multi-step atomic operations (paste, template apply, clipboard ops).
+- `docs/plans/m6-layers-undo-plan.md` D2 rationale — canonical for any future "multi-region atomic command" where a spanning bbox would waste memory.
