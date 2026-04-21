@@ -23,7 +23,7 @@
 
 import { applyRegion } from './diff';
 import type { BlendMode } from './store';
-import type { Layer, Stroke } from './types';
+import type { ApplyTemplateSnapshot, Layer, Stroke } from './types';
 
 export const MAX_HISTORY_COUNT = 100;
 export const MAX_HISTORY_BYTES = 5 * 1024 * 1024; // 5 MB
@@ -36,7 +36,17 @@ export type Command =
   | { kind: 'layer-rename'; id: string; before: string; after: string }
   | { kind: 'layer-opacity'; id: string; before: number; after: number }
   | { kind: 'layer-blend'; id: string; before: BlendMode; after: BlendMode }
-  | { kind: 'layer-visibility'; id: string; before: boolean; after: boolean };
+  | { kind: 'layer-visibility'; id: string; before: boolean; after: boolean }
+  | {
+      // M7: apply-template is a whole-document swap. before/after carry
+      // layers + activeLayerId + variant + hasEditedSinceTemplate +
+      // lastAppliedTemplateId. Undo/redo routes through
+      // EditorActions.applyTemplateSnapshot which calls the store's
+      // applyTemplateState atomic setter.
+      kind: 'apply-template';
+      before: ApplyTemplateSnapshot;
+      after: ApplyTemplateSnapshot;
+    };
 
 /**
  * Minimal adapter the undo stack needs to mutate the store + layer
@@ -64,6 +74,12 @@ export type EditorActions = {
   recomposite: () => void;
   /** True while a pointer stroke is still in flight (D10). */
   strokeActive: () => boolean;
+  /**
+   * M7: apply an ApplyTemplateSnapshot in one atomic store write. Called
+   * by undo/redo of apply-template commands. The adapter is expected to
+   * also cancel any in-flight transition timers before swapping state.
+   */
+  applyTemplateSnapshot: (snapshot: ApplyTemplateSnapshot) => void;
 };
 
 /** Size estimate in bytes. Includes patch before/after + small constant. */
@@ -78,6 +94,13 @@ function sizeOfCommand(cmd: Command): number {
   if (cmd.kind === 'layer-add' || cmd.kind === 'layer-delete') {
     // Cost is dominated by the layer's pixels buffer.
     return 64 + cmd.layer.pixels.byteLength;
+  }
+  if (cmd.kind === 'apply-template') {
+    // Sum pre + post layer pixel bytes. Metadata is ~128 bytes.
+    let n = 128;
+    for (const l of cmd.before.layers) n += l.pixels.byteLength;
+    for (const l of cmd.after.layers) n += l.pixels.byteLength;
+    return n;
   }
   // Rename / opacity / blend / visibility / reorder — tiny records.
   return 64;
@@ -220,6 +243,15 @@ function applyCommand(
     }
     case 'layer-visibility': {
       actions.setLayerVisible(cmd.id, dir === 'before' ? cmd.before : cmd.after);
+      return;
+    }
+    case 'apply-template': {
+      // M7: whole-document snapshot swap. The adapter is responsible
+      // for cancelling any in-flight transition timers before the
+      // store write so a stale +700ms hint / +1000ms pulse timer
+      // doesn't fire against the newly-restored state.
+      const snapshot = dir === 'before' ? cmd.before : cmd.after;
+      actions.applyTemplateSnapshot(snapshot);
       return;
     }
   }

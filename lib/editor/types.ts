@@ -30,6 +30,20 @@ export type SkinDocument = {
   activeLayerId: string;
   createdAt: number;
   updatedAt: number;
+  /**
+   * M7: true once the user has committed any stroke since the last
+   * applyTemplate (or since session start if no template was applied).
+   * Optional for backward-compat with M3–M6 saves; loadDocument defaults
+   * missing/unknown values to `true` so existing users skip the Ghost
+   * picker on reload.
+   */
+  hasEditedSinceTemplate?: boolean;
+  /**
+   * M7: the id of the most recently applied template, or null if none.
+   * Optional for backward-compat. Drives the contextual hint + affordance
+   * pulse on reload-mid-transition (edge case).
+   */
+  lastAppliedTemplateId?: string | null;
 };
 
 /**
@@ -80,3 +94,59 @@ export type Point = { x: number; y: number };
 
 /** RGBA tuple, 0–255 per channel. */
 export type RGBA = readonly [r: number, g: number, b: number, a: number];
+
+// ─── M7: template types ────────────────────────────────────────────────
+
+/**
+ * Which UI element pulses at +1000ms post-apply per DESIGN §5.4. `null`
+ * skips the pulse. The matching component declares `data-pulse-target`
+ * on its root DOM node; AffordancePulse sets `data-pulse="true"` and a
+ * CSS keyframe runs for 600ms.
+ */
+export type AffordancePulseTarget = 'color' | 'mirror' | 'brush' | null;
+
+/** One template in the catalog. Shape matches DESIGN §5.2 manifest. */
+export type TemplateMeta = {
+  id: string;
+  label: string;
+  variant: SkinVariant;
+  /** Absolute URL from `public/`, e.g. `/templates/classic/classic-hoodie.png`. */
+  file: string;
+  /** Absolute URL to a 256×256 WebP thumbnail in `/templates/thumbs/`. */
+  thumbnail: string;
+  license: 'MIT';
+  credit: string | null;
+  tags: string[];
+  /** String shown anchored to the viewport at +700ms post-apply. */
+  contextualHint: string;
+  /** Which UI element pulses at +1000ms post-apply. */
+  affordancePulse: AffordancePulseTarget;
+};
+
+/** One category grouping in the bottom sheet. */
+export type TemplateCategory = {
+  id: string;
+  label: string;
+  templates: TemplateMeta[];
+};
+
+/** Top-level manifest shape. `version` is reserved for future migrations. */
+export type TemplateManifest = {
+  version: 1;
+  categories: TemplateCategory[];
+};
+
+/**
+ * Snapshot captured by the apply-template undo command. Both `before`
+ * and `after` carry the full multi-field state so undo/redo is a pure
+ * state swap. `layers` holds deep-cloned layer objects (pixel buffers
+ * sliced, not shared) so subsequent stamp-writes to the live layer
+ * can't corrupt the snapshot.
+ */
+export type ApplyTemplateSnapshot = {
+  layers: Layer[];
+  activeLayerId: string;
+  variant: SkinVariant;
+  hasEditedSinceTemplate: boolean;
+  lastAppliedTemplateId: string | null;
+};
