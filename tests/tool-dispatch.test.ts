@@ -3,11 +3,13 @@
 // M5 Unit 6 — tool dispatcher.
 // Unit-test against a mocked StrokeContext (layer + spy textureManager).
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  resetStrokeRecorder,
   samplePickerAt,
   strokeContinue,
+  strokeEnd,
   strokeStart,
   type StrokeContext,
 } from '../lib/editor/tools/dispatch';
@@ -187,6 +189,144 @@ describe('dispatch.strokeContinue', () => {
     const { ctx, flushSpy } = makeCtx({ tool: 'bucket' });
     strokeContinue(ctx, 0, 0, 10, 10);
     expect(flushSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('dispatch.strokeEnd — recorder emits Stroke records (M6 Unit 4)', () => {
+  beforeEach(() => resetStrokeRecorder());
+
+  it('pencil drag: one Stroke with 1 patch covering start + end stamps', () => {
+    const commitSpy = vi.fn();
+    const { ctx } = makeCtx({
+      tool: 'pencil',
+      onStrokeCommit: commitSpy,
+    });
+    strokeStart(ctx, 10, 10);
+    strokeContinue(ctx, 10, 10, 15, 10);
+    const stroke = strokeEnd(ctx);
+    expect(stroke).not.toBeNull();
+    expect(stroke!.patches).toHaveLength(1);
+    expect(stroke!.mirrored).toBe(false);
+    expect(stroke!.tool).toBe('pencil');
+    // Bbox covers both stamps (size=1): tight rect from (10,10) to (15,10).
+    const { bbox } = stroke!.patches[0];
+    expect(bbox.x).toBe(10);
+    expect(bbox.y).toBe(10);
+    expect(bbox.w).toBe(6); // 10..15 inclusive
+    expect(bbox.h).toBe(1);
+    expect(commitSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('pencil stroke after = stamped color, before = zeros', () => {
+    const { ctx } = makeCtx({ tool: 'pencil', activeColorHex: '#ff8800' });
+    strokeStart(ctx, 20, 20);
+    const stroke = strokeEnd(ctx)!;
+    const patch = stroke.patches[0];
+    expect(patch.after.length).toBe(patch.bbox.w * patch.bbox.h * 4);
+    expect(patch.before.length).toBe(patch.after.length);
+    // after: single pixel painted with the active color
+    expect(patch.after[0]).toBe(0xff);
+    expect(patch.after[1]).toBe(0x88);
+    expect(patch.after[2]).toBe(0x00);
+    expect(patch.after[3]).toBe(255);
+    // before: zeros
+    expect(patch.before[0]).toBe(0);
+    expect(patch.before[3]).toBe(0);
+  });
+
+  it('mirror pencil: one Stroke, 2 patches, mirrored=true', () => {
+    const src = CLASSIC_UVS.rightArm.front;
+    const { ctx } = makeCtx({
+      tool: 'pencil',
+      mirrorEnabled: true,
+    });
+    strokeStart(ctx, src.x + 1, src.y + 2);
+    const stroke = strokeEnd(ctx)!;
+    expect(stroke.patches).toHaveLength(2);
+    expect(stroke.mirrored).toBe(true);
+    const dst = mirrorAtlasPixel('classic', src.x + 1, src.y + 2)!;
+    // Second patch covers the mirror stamp.
+    const secondBbox = stroke.patches[1].bbox;
+    expect(dst.x).toBeGreaterThanOrEqual(secondBbox.x);
+    expect(dst.x).toBeLessThan(secondBbox.x + secondBbox.w);
+  });
+
+  it('bucket stroke: one patch covering the filled island', () => {
+    const rect = CLASSIC_UVS.head.front;
+    const { ctx } = makeCtx({ tool: 'bucket', activeColorHex: '#00ff00' });
+    strokeStart(ctx, rect.x + 2, rect.y + 2);
+    const stroke = strokeEnd(ctx)!;
+    expect(stroke.patches).toHaveLength(1);
+    expect(stroke.tool).toBe('bucket');
+    // Bbox is tight around the head.front island.
+    expect(stroke.patches[0].bbox.x).toBe(rect.x);
+    expect(stroke.patches[0].bbox.y).toBe(rect.y);
+    expect(stroke.patches[0].bbox.w).toBe(rect.w);
+    expect(stroke.patches[0].bbox.h).toBe(rect.h);
+  });
+
+  it('bucket on empty seed: no Stroke emitted', () => {
+    const commitSpy = vi.fn();
+    const { ctx } = makeCtx({
+      tool: 'bucket',
+      onStrokeCommit: commitSpy,
+    });
+    const changed = strokeStart(ctx, 0, 0);
+    expect(changed).toBe(false);
+    const stroke = strokeEnd(ctx);
+    expect(stroke).toBeNull();
+    expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  it('onStrokeActive fires true on start and false on end', () => {
+    const activeSpy = vi.fn();
+    const { ctx } = makeCtx({
+      tool: 'pencil',
+      onStrokeActive: activeSpy,
+    });
+    strokeStart(ctx, 5, 5);
+    expect(activeSpy).toHaveBeenLastCalledWith(true);
+    strokeEnd(ctx);
+    expect(activeSpy).toHaveBeenLastCalledWith(false);
+    expect(activeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('picker strokeStart does not open a recorder', () => {
+    const commitSpy = vi.fn();
+    const { ctx } = makeCtx({
+      tool: 'picker' as ToolId,
+      onStrokeCommit: commitSpy,
+    });
+    const changed = strokeStart(ctx, 5, 5);
+    expect(changed).toBe(false);
+    const stroke = strokeEnd(ctx);
+    expect(stroke).toBeNull();
+    expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  it('eraser horizontal drag: patch after-alpha is 0 across the full bbox', () => {
+    const { ctx, layer } = makeCtx({ tool: 'eraser' });
+    // pre-paint a 1×6 horizontal red strip so erase-line covers every bbox pixel
+    for (let dx = 0; dx < 6; dx++) {
+      const i = (10 * W + (10 + dx)) * 4;
+      layer.pixels[i] = 255;
+      layer.pixels[i + 3] = 255;
+    }
+    strokeStart(ctx, 10, 10);
+    strokeContinue(ctx, 10, 10, 15, 10);
+    const stroke = strokeEnd(ctx)!;
+    expect(stroke.tool).toBe('eraser');
+    const patch = stroke.patches[0];
+    expect(patch.bbox.h).toBe(1);
+    // After-alpha is 0 for every byte slot in the slice (horizontal line; every
+    // pixel in bbox was touched).
+    for (let i = 3; i < patch.after.length; i += 4) {
+      expect(patch.after[i]).toBe(0);
+    }
+    // Before-alpha was 255 (fully opaque red).
+    for (let i = 3; i < patch.before.length; i += 4) {
+      expect(patch.before[i]).toBe(255);
+    }
   });
 });
 
