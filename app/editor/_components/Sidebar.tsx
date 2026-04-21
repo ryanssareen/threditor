@@ -10,15 +10,27 @@ import { Toolbar } from './Toolbar';
 type SidebarProps = {
   className?: string;
   onLayerUndoPush?: (cmd: LayerLifecycleCommand) => void;
+  /**
+   * M7 Unit 0: user-initiated variant toggle callback. EditorLayout
+   * wires this to clear the undo stack before the variant flips (the
+   * store's setVariant clears layers atomically so the TM reseeds a
+   * placeholder). If omitted, VariantToggle falls back to calling
+   * setVariant directly.
+   */
+  onUserVariantChange?: (next: SkinVariant) => void;
 };
 
-export function Sidebar({ className, onLayerUndoPush }: SidebarProps) {
+export function Sidebar({
+  className,
+  onLayerUndoPush,
+  onUserVariantChange,
+}: SidebarProps) {
   return (
     <div
       className={`flex h-full w-full flex-col gap-4 overflow-y-auto p-4 ${className ?? ''}`}
     >
       <Toolbar />
-      <VariantToggle />
+      <VariantToggle onUserVariantChange={onUserVariantChange} />
       <BrushSizeRadio />
       <ColorPicker />
       <LayerPanel onUndoPush={onLayerUndoPush} />
@@ -37,9 +49,21 @@ const VARIANTS: { id: SkinVariant; label: string }[] = [
   { id: 'slim', label: 'Slim' },
 ];
 
-function VariantToggle() {
+function VariantToggle({
+  onUserVariantChange,
+}: {
+  onUserVariantChange?: (next: SkinVariant) => void;
+}) {
   const variant = useEditorStore((s) => s.variant);
   const setVariant = useEditorStore((s) => s.setVariant);
+
+  const handleClick = (id: SkinVariant): void => {
+    if (onUserVariantChange) {
+      onUserVariantChange(id);
+    } else {
+      setVariant(id);
+    }
+  };
 
   return (
     <div
@@ -55,7 +79,7 @@ function VariantToggle() {
             type="button"
             aria-pressed={pressed}
             data-testid={`variant-${id}`}
-            onClick={() => setVariant(id)}
+            onClick={() => handleClick(id)}
             className={`flex-1 rounded-sm border border-ui-border bg-ui-base px-2 py-1 font-mono text-sm text-text-primary hover:border-accent/60 disabled:opacity-50 ${
               pressed ? 'border-accent' : ''
             }`}

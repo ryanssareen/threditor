@@ -307,6 +307,8 @@ Ten templates ship with the MVP. Each maps to either a learning surface or a bro
 
 `shaded-hoodie` is deliberately mid-quality (6/10). Label "improve this" frames mediocrity as the assignment, not the result.
 
+**M7 note (manifest encoding of `variant: both`):** the `blank-better` row above lists `variant: both` as a user-facing concept, but `manifest.json` requires one variant per entry (the schema in §5.2 types `variant` as `'classic' | 'slim'`). Ship as two manifest entries — `blank-better-classic` and `blank-better-slim` — both labeled "Blank but Better" and both tagged `base`. The Base category surfaces whichever matches the current session variant first; both remain selectable.
+
 ### 5.2 Manifest format
 
 ```json
@@ -374,6 +376,8 @@ Frame-by-frame after template selection:
 | 2.0+ | 2000ms+ | Export attempted without edit → soft-friction dialog: "Edit first" / "Export anyway" |
 
 Guardrail applies only if stroke count is zero. Any edit removes the prompt.
+
+**M7 note (guardrail trigger point):** the 2000ms+ row describes when the guardrail can fire; it is not a timer that shoots a dialog into the UI unprompted. The soft-friction dialog lands in **M8** alongside the PNG export action and is wired to `useEditorStore.getState().hasEditedSinceTemplate`. M7 persists the `hasEditedSinceTemplate` + `lastAppliedTemplateId` flags so M8's export handler has the state it needs without additional plumbing.
 
 ---
 
