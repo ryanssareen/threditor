@@ -23,6 +23,8 @@ import type { Layer, Stroke, TemplateMeta } from '@/lib/editor/types';
 import { EditorCanvas } from './EditorCanvas';
 import type { LayerLifecycleCommand } from './LayerPanel';
 import { Sidebar } from './Sidebar';
+import { TemplateGate } from './TemplateGate';
+import { useTemplateGate } from './useTemplateGate';
 import { ViewportUV } from './ViewportUV';
 
 export function EditorLayout() {
@@ -62,6 +64,10 @@ export function EditorLayout() {
   // M4 Unit 0 (P1 from M3 review): hydrationPending gates paint interaction
   // until loadDocument() resolves.
   const [hydrationPending, setHydrationPending] = useState(true);
+
+  // M7 Unit 5/6: hoisted gate state. Shared between TemplateGate (render)
+  // and TemplateMenuButton (in Sidebar) so both siblings can dispatch events.
+  const gate = useTemplateGate(hydrationPending);
 
   // Hydrate from IndexedDB then install persistence.
   useEffect(() => {
@@ -331,6 +337,13 @@ export function EditorLayout() {
           onStrokeCommit={handleStrokeCommit}
           onStrokeActive={handleStrokeActive}
         />
+        {/* M7: overlay gate — absolutely positioned within the 3D pane */}
+        <TemplateGate
+          state={gate.state}
+          dispatch={gate.dispatch}
+          onApplyTemplate={handleApplyTemplate}
+          hydrationPending={hydrationPending}
+        />
       </div>
 
       <div className="relative h-[40vh] w-full shrink-0 sm:h-full sm:w-auto sm:flex-1">
@@ -355,6 +368,9 @@ export function EditorLayout() {
           className="h-full w-full"
           onLayerUndoPush={handleLayerUndoPush}
           onUserVariantChange={handleUserVariantChange}
+          onOpenTemplateMenu={() =>
+            gate.dispatch({ type: 'SHEET_OPENED_FROM_MENU' })
+          }
         />
       </aside>
     </div>

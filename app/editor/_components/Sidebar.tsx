@@ -5,6 +5,7 @@ import { useEditorStore } from '@/lib/editor/store';
 import type { SkinVariant } from '@/lib/editor/types';
 import { ColorPicker } from './ColorPicker';
 import { LayerPanel, type LayerLifecycleCommand } from './LayerPanel';
+import { TemplateMenuButton } from './TemplateMenuButton';
 import { Toolbar } from './Toolbar';
 
 type SidebarProps = {
@@ -18,17 +19,23 @@ type SidebarProps = {
    * setVariant directly.
    */
   onUserVariantChange?: (next: SkinVariant) => void;
+  /** M7 Unit 6: open the template picker via the menu path (source:'menu'). */
+  onOpenTemplateMenu?: () => void;
 };
 
 export function Sidebar({
   className,
   onLayerUndoPush,
   onUserVariantChange,
+  onOpenTemplateMenu,
 }: SidebarProps) {
   return (
     <div
       className={`flex h-full w-full flex-col gap-4 overflow-y-auto p-4 ${className ?? ''}`}
     >
+      {onOpenTemplateMenu !== undefined && (
+        <TemplateMenuButton onOpen={onOpenTemplateMenu} />
+      )}
       <Toolbar />
       <VariantToggle onUserVariantChange={onUserVariantChange} />
       <BrushSizeRadio />
