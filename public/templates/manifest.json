@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "categories": [
+    {
+      "id": "safe-wins",
+      "label": "Start Simple",
+      "templates": [
+        {
+          "id": "classic-hoodie",
+          "label": "Classic Hoodie",
+          "variant": "classic",
+          "file": "/templates/classic/classic-hoodie.png",
+          "thumbnail": "/templates/thumbs/classic-hoodie.png",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["hoodie", "beginner"],
+          "contextualHint": "Try a new color",
+          "affordancePulse": "color"
+        },
+        {
+          "id": "gamer-tee",
+          "label": "Gamer Tee + Jeans",
+          "variant": "classic",
+          "file": "/templates/classic/gamer-tee.png",
+          "thumbnail": "/templates/thumbs/gamer-tee.png",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["casual", "beginner"],
+          "contextualHint": "Place a logo or letter",
+          "affordancePulse": "color"
+        },
+        {
+          "id": "minimal-black",
+          "label": "Minimal Black",
+          "variant": "slim",
+          "file": "/templates/slim/minimal-black.png",
+          "thumbnail": "/templates/thumbs/minimal-black.png",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["minimal", "dark"],
+          "contextualHint": "Add contrast with near-black",
+          "affordancePulse": "color"
+        }
+      ]
+    },
+    {
+      "id": "technique",
+      "label": "Learn a Technique",
+      "templates": [
+        {
+          "id": "split-color",
+          "label": "Split Character",
+          "variant": "classic",
+          "file": "/templates/classic/split-color.png",
+          "thumbnail": "/templates/thumbs/split-color.png",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["technique", "mirror"],
+          "contextualHint": "Mirror mode keeps both sides in sync",
+          "affordancePulse": "mirror"
+        },
+        {
+          "id": "shaded-hoodie",
+          "label": "Shaded Hoodie — improve this",
+          "variant": "classic",
+          "file": "/templates/classic/shaded-hoodie.png",
+          "thumbnail": "/templates/thumbs/shaded-hoodie.png",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["technique", "shading"],
+          "contextualHint": "Add a darker shade to the sides",
+          "affordancePulse": "color"
+        },
+        {
+          "id": "armor-lite",
+          "label": "Armor Lite",
+          "variant": "classic",
+          "file": "/templates/classic/armor-lite.png",
+          "thumbnail": "/templates/thumbs/armor-lite.png",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["technique", "highlights"],
+          "contextualHint": "Highlight edges with a lighter shade",
+          "affordancePulse": "brush"
+        },
+        {
+          "id": "cartoon-face",
+          "label": "Cartoon Face",
+          "variant": "slim",
+          "file": "/templates/slim/cartoon-face.png",
+          "thumbnail": "/templates/thumbs/cartoon-face.png",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["technique", "face"],
+          "contextualHint": "Zoom into the face to edit pixel-by-pixel",
+          "affordancePulse": "brush"
+        }
+      ]
+    },
+    {
+      "id": "identity",
+      "label": "Make it Yours",
+      "templates": [
+        {
+          "id": "sports-jersey",
+          "label": "Sports Jersey",
+          "variant": "classic",
+          "file": "/templates/classic/sports-jersey.png",
+          "thumbnail": "/templates/thumbs/sports-jersey.png",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["identity", "number"],
+          "contextualHint": "Add your number on the back",
+          "affordancePulse": "color"
+        },
+        {
+          "id": "hoodie-headphones",
+          "label": "Hoodie + Headphones",
+          "variant": "slim",
+          "file": "/templates/slim/hoodie-headphones.png",
+          "thumbnail": "/templates/thumbs/hoodie-headphones.png",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["identity", "accessory"],
+          "contextualHint": "Place an accessory on the head",
+          "affordancePulse": "color"
+        }
+      ]
+    },
+    {
+      "id": "base",
+      "label": "Start Blank",
+      "templates": [
+        {
+          "id": "blank-better-classic",
+          "label": "Blank but Better",
+          "variant": "classic",
+          "file": "/templates/classic/blank-better.png",
+          "thumbnail": "/templates/thumbs/blank-better-classic.png",
+          "license": "MIT",
+          "credit": "Microsoft minecraft-samples (adapted)",
+          "tags": ["base"],
+          "contextualHint": "A clean slate — paint anywhere",
+          "affordancePulse": null
+        },
+        {
+          "id": "blank-better-slim",
+          "label": "Blank but Better",
+          "variant": "slim",
+          "file": "/templates/slim/blank-better.png",
+          "thumbnail": "/templates/thumbs/blank-better-slim.png",
+          "license": "MIT",
+          "credit": "Microsoft minecraft-samples (adapted)",
+          "tags": ["base"],
+          "contextualHint": "A clean slate — paint anywhere",
+          "affordancePulse": null
+        }
+      ]
+    }
+  ]
+}
