@@ -192,7 +192,15 @@ describe('persistence', () => {
 
     const result = await loadDocument();
 
-    expect(result).toEqual(mockDocument);
+    // M7 Unit 8: loadDocument normalizes the two M7 fields onto any
+    // record it returns. A fixture without those fields loads with
+    // safe defaults (true / null) — see tests/persistence-m7.test.ts
+    // for the backward-compat contract.
+    expect(result).toEqual({
+      ...mockDocument,
+      hasEditedSinceTemplate: true,
+      lastAppliedTemplateId: null,
+    });
   });
 
   // ── 8. loadDocument catches get() errors and returns null ───────────────
@@ -338,7 +346,13 @@ describe('persistence', () => {
 
     const result = await loadDocument();
 
-    expect(result).toEqual(multi);
+    // M7 Unit 8: normalize M7 fields onto the returned record (see
+    // the first loadDocument round-trip test above).
+    expect(result).toEqual({
+      ...multi,
+      hasEditedSinceTemplate: true,
+      lastAppliedTemplateId: null,
+    });
     expect(result?.layers).toHaveLength(2);
     expect(result?.activeLayerId).toBe('l2');
   });

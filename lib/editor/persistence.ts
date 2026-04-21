@@ -54,6 +54,15 @@ export type InitPersistenceParams = {
    * the first write uses `Date.now()`.
    */
   createdAt?: number;
+  /**
+   * M7: accessor for the edited-since-template flag. When omitted,
+   * defaults to a function returning `true` (safe choice — existing
+   * users who reload with no template applied won't be re-prompted by
+   * the Ghost picker).
+   */
+  getHasEditedSinceTemplate?: () => boolean;
+  /** M7: accessor for the last-applied template id, or null if none. */
+  getLastAppliedTemplateId?: () => string | null;
 };
 
 export type InitPersistenceReturn = {
@@ -67,6 +76,8 @@ export function initPersistence({
   getLayers,
   getActiveLayerId,
   createdAt,
+  getHasEditedSinceTemplate,
+  getLastAppliedTemplateId,
 }: InitPersistenceParams): InitPersistenceReturn {
   const { setSavingState } = useEditorStore.getState();
   let debounceHandle: ReturnType<typeof setTimeout> | null = null;
@@ -84,6 +95,9 @@ export function initPersistence({
       activeLayerId,
       createdAt: createdAt ?? now,
       updatedAt: now,
+      // M7: template-aware flags. Defaults preserve backward-compat.
+      hasEditedSinceTemplate: getHasEditedSinceTemplate?.() ?? true,
+      lastAppliedTemplateId: getLastAppliedTemplateId?.() ?? null,
     };
   };
 
@@ -202,11 +216,35 @@ export function initPersistence({
  * Hydrate a saved SkinDocument from IndexedDB (if any). Call once on app
  * init from EditorLayout; if the returned doc is non-null, rebuild the
  * Layer from `doc.layers[0].pixels`.
+ *
+ * M7: `hasEditedSinceTemplate` and `lastAppliedTemplateId` are parsed
+ * defensively. Missing/unknown values resolve to safe defaults:
+ *   - `hasEditedSinceTemplate`: defaults to `true` for M3–M6 records
+ *     so returning users with prior edits are NOT re-prompted by the
+ *     Ghost picker.
+ *   - `lastAppliedTemplateId`: defaults to `null`.
+ * Non-boolean / non-string values are treated as missing.
  */
 export async function loadDocument(): Promise<SkinDocument | null> {
   try {
-    const doc = await get<SkinDocument>(DOC_KEY);
-    return doc ?? null;
+    const raw = await get<SkinDocument>(DOC_KEY);
+    if (raw === undefined || raw === null) return null;
+    // Normalize the two M7 fields so callers never have to branch on
+    // "is this an M3-M6 save or M7+". Spread over the raw doc so any
+    // existing validated fields pass through.
+    const hasEdited =
+      typeof raw.hasEditedSinceTemplate === 'boolean'
+        ? raw.hasEditedSinceTemplate
+        : true;
+    const lastApplied =
+      typeof raw.lastAppliedTemplateId === 'string'
+        ? raw.lastAppliedTemplateId
+        : null;
+    return {
+      ...raw,
+      hasEditedSinceTemplate: hasEdited,
+      lastAppliedTemplateId: lastApplied,
+    };
   } catch {
     return null;
   }
