@@ -10,11 +10,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import {
+  applyTemplate,
+  cancelActiveTransition,
+  type ApplyTemplateActions,
+} from '@/lib/editor/apply-template';
 import { initPersistence, loadDocument } from '@/lib/editor/persistence';
 import { useEditorStore } from '@/lib/editor/store';
 import { UndoStack, writeLayerRegion, type EditorActions } from '@/lib/editor/undo';
 import { useTextureManagerBundle } from '@/lib/editor/use-texture-manager';
-import type { Layer, Stroke } from '@/lib/editor/types';
+import type { Layer, Stroke, TemplateMeta } from '@/lib/editor/types';
 import { EditorCanvas } from './EditorCanvas';
 import type { LayerLifecycleCommand } from './LayerPanel';
 import { Sidebar } from './Sidebar';
@@ -169,12 +174,15 @@ export function EditorLayout() {
         markDirtyRef.current();
       },
       strokeActive: () => useEditorStore.getState().strokeActive,
-      // M7: apply-template snapshot swap. Unit 4 will add
-      // cancelActiveTransition() in front of the store write so a
-      // stale +700ms/+1000ms timer from a prior apply-template
-      // doesn't fire against the newly-restored state.
+      // M7: apply-template snapshot swap. Cancels any in-flight
+      // +700ms/+1000ms transition timers BEFORE the swap so they
+      // can't fire against the newly-restored state (plan D8 +
+      // Unit 4 clarification #1b).
       applyTemplateSnapshot: (snapshot) => {
+        cancelActiveTransition();
         useEditorStore.getState().applyTemplateState(snapshot);
+        useEditorStore.getState().setActiveContextualHint(null);
+        useEditorStore.getState().setPulseTarget(null);
       },
     };
   }, []);
@@ -182,6 +190,11 @@ export function EditorLayout() {
   const handleStrokeCommit = useCallback(
     (stroke: Stroke) => {
       undoStack.push({ kind: 'stroke', stroke });
+      // M7: first stroke after apply-template (or session start)
+      // flips hasEditedSinceTemplate true. markEdited is idempotent
+      // so subsequent strokes are no-ops at the store level. This
+      // rides the M6 dispatcher-chokepoint; zero per-tool changes.
+      useEditorStore.getState().markEdited();
     },
     [undoStack],
   );
@@ -195,6 +208,59 @@ export function EditorLayout() {
       undoStack.push(cmd);
     },
     [undoStack],
+  );
+
+  // M7 Unit 4: apply-template orchestrator. TemplateGate + the menu
+  // button funnel through here. pixels are the already-decoded RGBA
+  // buffer from lib/editor/templates.ts.decodeTemplatePng.
+  const handleApplyTemplate = useCallback(
+    (template: TemplateMeta, pixels: Uint8ClampedArray) => {
+      const applyActions: ApplyTemplateActions = {
+        getLayers: () => layersRef.current,
+        getActiveLayerId: () => useEditorStore.getState().activeLayerId,
+        getVariant: () => useEditorStore.getState().variant,
+        getHasEditedSinceTemplate: () =>
+          useEditorStore.getState().hasEditedSinceTemplate,
+        getLastAppliedTemplateId: () =>
+          useEditorStore.getState().lastAppliedTemplateId,
+        strokeActive: () => useEditorStore.getState().strokeActive,
+        hydrationPending: () => hydrationPending,
+        applyTemplateSnapshot: (snapshot) => {
+          // Note: top-level applyTemplate already called
+          // cancelActiveTransition() at the start of the orchestrator
+          // (clarification #1a). This path is just the store write.
+          useEditorStore.getState().applyTemplateState(snapshot);
+          useEditorStore.getState().setActiveContextualHint(null);
+          useEditorStore.getState().setPulseTarget(null);
+        },
+        recomposite: () => {
+          const b = bundleRef.current;
+          if (b === null) return;
+          b.textureManager.composite(layersRef.current);
+          markDirtyRef.current();
+        },
+        setActiveContextualHint: (hint) => {
+          useEditorStore.getState().setActiveContextualHint(hint);
+        },
+        setPulseTarget: (target) => {
+          useEditorStore.getState().setPulseTarget(target);
+        },
+        clearContextualHint: () => {
+          useEditorStore.getState().clearContextualHint();
+        },
+      };
+
+      const result = applyTemplate(
+        applyActions,
+        (cmd) => undoStack.push(cmd),
+        template,
+        pixels,
+      );
+      if (!result.ok) {
+        console.warn(`applyTemplate rejected: ${result.reason}`);
+      }
+    },
+    [undoStack, hydrationPending],
   );
 
   // M7 Unit 0: user-initiated variant toggle clears the undo stack.
