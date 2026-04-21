@@ -169,6 +169,13 @@ export function EditorLayout() {
         markDirtyRef.current();
       },
       strokeActive: () => useEditorStore.getState().strokeActive,
+      // M7: apply-template snapshot swap. Unit 4 will add
+      // cancelActiveTransition() in front of the store write so a
+      // stale +700ms/+1000ms timer from a prior apply-template
+      // doesn't fire against the newly-restored state.
+      applyTemplateSnapshot: (snapshot) => {
+        useEditorStore.getState().applyTemplateState(snapshot);
+      },
     };
   }, []);
 

@@ -79,6 +79,9 @@ function buildActions(getLayers: () => Layer[], recomposite = vi.fn()): EditorAc
     setLayerVisible: (id, v) => useEditorStore.getState().setLayerVisible(id, v),
     recomposite,
     strokeActive: () => useEditorStore.getState().strokeActive,
+    applyTemplateSnapshot: (snapshot) => {
+      useEditorStore.getState().applyTemplateState(snapshot);
+    },
   };
 }
 

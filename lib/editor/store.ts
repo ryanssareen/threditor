@@ -36,7 +36,12 @@ import {
   DEFAULT_PREVIOUS_COLOR,
 } from '@/lib/color/palette';
 import { pickerStateFromHex, type PickerState } from '@/lib/color/picker-state';
-import type { Layer, SkinVariant } from './types';
+import type {
+  AffordancePulseTarget,
+  ApplyTemplateSnapshot,
+  Layer,
+  SkinVariant,
+} from './types';
 
 /**
  * M5: the four paint tools. Mirror was originally scaffolded as a fifth
@@ -97,6 +102,20 @@ export type EditorState = {
   // their local paintingRef into this flag.
   strokeActive: boolean;
 
+  // ── M7 template state ──────────────────────────────────────────────
+  // True once the user has committed any stroke since the last
+  // applyTemplate (or since session start if no template applied).
+  // Drives the Ghost-picker gate (returning users skip on true) and
+  // the M8 0ms-edit guardrail ("Edit first / Export anyway" dialog).
+  hasEditedSinceTemplate: boolean;
+  // The id of the most recently applied template, or null if none.
+  lastAppliedTemplateId: string | null;
+  // The hint text anchored to the viewport at +700ms post-apply.
+  // Cleared on pointerdown or at +3000ms.
+  activeContextualHint: string | null;
+  // Which affordance pulses at +1000ms post-apply.
+  pulseTarget: AffordancePulseTarget;
+
   // Persistence
   savingState: SavingState;
 
@@ -152,6 +171,26 @@ export type EditorState = {
   setLayerOpacity: (id: string, opacity: number) => void;
   setLayerBlendMode: (id: string, mode: BlendMode) => void;
   setLayerVisible: (id: string, visible: boolean) => void;
+
+  // ── M7 template actions ────────────────────────────────────────────
+  /**
+   * Idempotent flip from false → true. Subsequent calls no-op. Called
+   * from EditorLayout.handleStrokeCommit on every committed stroke.
+   * Reset to false by applyTemplateState.
+   */
+  markEdited: () => void;
+  setActiveContextualHint: (hint: string | null) => void;
+  clearContextualHint: () => void;
+  setPulseTarget: (target: AffordancePulseTarget) => void;
+  /**
+   * Atomic swap of the five template-aware slots: layers + activeLayerId
+   * + variant + hasEditedSinceTemplate + lastAppliedTemplateId. Used by
+   * apply-template (fresh apply) AND by undo/redo of an apply-template
+   * command (snapshot replay). Deliberately bypasses setVariant's
+   * layer-clearing behavior so template layers are preserved across
+   * the variant flip.
+   */
+  applyTemplateState: (snapshot: ApplyTemplateSnapshot) => void;
 };
 
 const INITIAL_ACTIVE_COLOR = pickerStateFromHex(DEFAULT_PALETTE[0]) ?? {
@@ -190,6 +229,12 @@ export const useEditorStore = create<EditorState>((set) => ({
   layers: [],
   activeLayerId: '',
   strokeActive: false,
+
+  // M7 template state defaults.
+  hasEditedSinceTemplate: false,
+  lastAppliedTemplateId: null,
+  activeContextualHint: null,
+  pulseTarget: null,
 
   savingState: 'pending',
 
@@ -351,4 +396,33 @@ export const useEditorStore = create<EditorState>((set) => ({
       next[idx] = { ...next[idx], visible };
       return { layers: next };
     }),
+
+  // ── M7 template actions ────────────────────────────────────────────
+
+  markEdited: () =>
+    set((prev) =>
+      prev.hasEditedSinceTemplate ? prev : { hasEditedSinceTemplate: true },
+    ),
+
+  setActiveContextualHint: (hint) =>
+    set((prev) =>
+      prev.activeContextualHint === hint ? prev : { activeContextualHint: hint },
+    ),
+
+  clearContextualHint: () =>
+    set((prev) =>
+      prev.activeContextualHint === null ? prev : { activeContextualHint: null },
+    ),
+
+  setPulseTarget: (target) =>
+    set((prev) => (prev.pulseTarget === target ? prev : { pulseTarget: target })),
+
+  applyTemplateState: (snapshot) =>
+    set(() => ({
+      layers: snapshot.layers,
+      activeLayerId: snapshot.activeLayerId,
+      variant: snapshot.variant,
+      hasEditedSinceTemplate: snapshot.hasEditedSinceTemplate,
+      lastAppliedTemplateId: snapshot.lastAppliedTemplateId,
+    })),
 }));
