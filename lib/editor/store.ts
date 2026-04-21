@@ -193,7 +193,15 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   savingState: 'pending',
 
-  setVariant: (v) => set({ variant: v }),
+  // M7 Unit 0: atomic variant flip + layer clear. use-texture-manager's
+  // Effect A sees the new variant and disposes+rebuilds the TM; Effect B
+  // sees layers.length === 0 and reseeds a fresh placeholder for the new
+  // variant. EditorLayout's VariantToggle handler wraps this with an
+  // explicit undoStack.clear() since user-toggled variant changes are
+  // NOT undoable (D5) — apply-template goes through applyTemplateState
+  // which sets variant+layers together without going through setVariant.
+  setVariant: (v) =>
+    set((prev) => (prev.variant === v ? prev : { variant: v, layers: [] })),
   setActiveTool: (t) => set({ activeTool: t }),
   setBrushSize: (n) => set({ brushSize: n }),
 

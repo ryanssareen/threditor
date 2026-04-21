@@ -190,6 +190,20 @@ export function EditorLayout() {
     [undoStack],
   );
 
+  // M7 Unit 0: user-initiated variant toggle clears the undo stack.
+  // User variant changes are NOT undoable per D5 — replaying stroke
+  // commands across a variant switch is semantically ambiguous and
+  // would require layer-aware variant-scoped snapshots that exceed the
+  // M6 memory budget. Apply-template's variant flip is a different
+  // path (applyTemplateState) and preserves the stack.
+  const handleUserVariantChange = useCallback(
+    (next: 'classic' | 'slim') => {
+      undoStack.clear();
+      useEditorStore.getState().setVariant(next);
+    },
+    [undoStack],
+  );
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       // Focus guard: shortcuts should never fire from within inputs,
@@ -264,7 +278,11 @@ export function EditorLayout() {
         className="h-[30vh] w-full shrink-0 border-t border-ui-border bg-ui-surface sm:h-full sm:w-[280px] sm:border-l sm:border-t-0"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}
       >
-        <Sidebar className="h-full w-full" onLayerUndoPush={handleLayerUndoPush} />
+        <Sidebar
+          className="h-full w-full"
+          onLayerUndoPush={handleLayerUndoPush}
+          onUserVariantChange={handleUserVariantChange}
+        />
       </aside>
     </div>
   );

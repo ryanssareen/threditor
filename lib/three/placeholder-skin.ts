@@ -5,10 +5,14 @@
  *
  * Palette is intentionally high-contrast for debug visibility, not aesthetic —
  * M2 visual review noted the purple-arm / blue-body pairing reads as "mushy"
- * against the OLED-dark background. That's acceptable because this whole file
- * is replaced by the real Microsoft minecraft-samples skin in M7.
+ * against the OLED-dark background.
  *
- * TODO(M7): replace with public/templates/classic/blank-better.png loader.
+ * M7 note: the `blank-better` template (adapted from Microsoft's
+ * minecraft-samples) is the production first-open recommendation via the
+ * Ghost Templates picker. This placeholder is kept as the fresh-install
+ * seed (displayed before the user picks a template, or after a variant
+ * toggle clears layers) and as the dev-time Classic↔Slim variant demo
+ * source. Do not remove — use-texture-manager's Effect B still calls it.
  */
 
 import { SKIN_ATLAS_SIZE } from './constants';
