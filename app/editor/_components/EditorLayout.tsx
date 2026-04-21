@@ -20,6 +20,8 @@ import { useEditorStore } from '@/lib/editor/store';
 import { UndoStack, writeLayerRegion, type EditorActions } from '@/lib/editor/undo';
 import { useTextureManagerBundle } from '@/lib/editor/use-texture-manager';
 import type { Layer, Stroke, TemplateMeta } from '@/lib/editor/types';
+import { AffordancePulse } from './AffordancePulse';
+import { ContextualHintOverlay } from './ContextualHintOverlay';
 import { EditorCanvas } from './EditorCanvas';
 import type { LayerLifecycleCommand } from './LayerPanel';
 import { Sidebar } from './Sidebar';
@@ -68,6 +70,10 @@ export function EditorLayout() {
   // M7 Unit 5/6: hoisted gate state. Shared between TemplateGate (render)
   // and TemplateMenuButton (in Sidebar) so both siblings can dispatch events.
   const gate = useTemplateGate(hydrationPending);
+
+  // M7 Unit 7: crossfade + Y-rotation pulse keys. Bumped on successful apply.
+  const [texFadeKey, setTexFadeKey] = useState(0);
+  const [yRotationPulseKey, setYRotationPulseKey] = useState(0);
 
   // Hydrate from IndexedDB then install persistence.
   useEffect(() => {
@@ -264,6 +270,9 @@ export function EditorLayout() {
       );
       if (!result.ok) {
         console.warn(`applyTemplate rejected: ${result.reason}`);
+      } else {
+        setTexFadeKey((k) => k + 1);
+        setYRotationPulseKey((k) => k + 1);
       }
     },
     [undoStack, hydrationPending],
@@ -336,7 +345,13 @@ export function EditorLayout() {
           hydrationPending={hydrationPending}
           onStrokeCommit={handleStrokeCommit}
           onStrokeActive={handleStrokeActive}
+          texFadeKey={texFadeKey}
+          yRotationPulseKey={yRotationPulseKey}
         />
+        {/* M7 Unit 7: contextual hint bubble */}
+        <ContextualHintOverlay />
+        {/* M7 Unit 7: headless affordance pulse coordinator */}
+        <AffordancePulse />
         {/* M7: overlay gate — absolutely positioned within the 3D pane */}
         <TemplateGate
           state={gate.state}

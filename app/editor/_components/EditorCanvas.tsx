@@ -16,6 +16,7 @@
  * creation to prevent paint bleed-through on occluded body parts.
  */
 
+import { useEffect, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { MOUSE, TOUCH, type Texture } from 'three';
@@ -39,6 +40,8 @@ type Props = {
   hydrationPending?: boolean;
   onStrokeCommit?: (stroke: Stroke) => void;
   onStrokeActive?: (active: boolean) => void;
+  texFadeKey?: number;
+  yRotationPulseKey?: number;
 };
 
 export function EditorCanvas({
@@ -50,9 +53,23 @@ export function EditorCanvas({
   hydrationPending,
   onStrokeCommit,
   onStrokeActive,
+  texFadeKey,
+  yRotationPulseKey,
 }: Props) {
+  const [fadeClass, setFadeClass] = useState('');
+
+  useEffect(() => {
+    if (texFadeKey === undefined) return;
+    setFadeClass('opacity-0');
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setFadeClass('');
+      });
+    });
+  }, [texFadeKey]);
+
   return (
-    <div className="relative h-full w-full">
+    <div className={`relative h-full w-full transition-opacity duration-200 ${fadeClass}`}>
       <Canvas
         camera={{ position: [...CAMERA_POSITION], fov: CAMERA_FOV }}
         className="h-full w-full"
@@ -91,6 +108,7 @@ export function EditorCanvas({
             hydrationPending={hydrationPending}
             onStrokeCommit={onStrokeCommit}
             onStrokeActive={onStrokeActive}
+            yRotationPulseKey={yRotationPulseKey}
           />
         ) : null}
         <CursorDecal />

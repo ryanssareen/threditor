@@ -91,6 +91,7 @@ export function Toolbar({ className }: { className?: string }) {
         <button
           data-testid="tool-mirror"
           data-mirror-enabled={mirrorEnabled}
+          data-pulse-target="mirror"
           aria-pressed={mirrorEnabled}
           onClick={toggleMirror}
           className={[

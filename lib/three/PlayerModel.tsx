@@ -79,6 +79,8 @@ type Props = {
   // M6: stroke-commit + strokeActive bridges. Optional; EditorLayout wires.
   onStrokeCommit?: (stroke: Stroke) => void;
   onStrokeActive?: (active: boolean) => void;
+  // M7: one-shot Y-rotation pulse key. Bump to trigger +0.1 rad lurch.
+  yRotationPulseKey?: number;
 };
 
 // PART_ORDER is typed `Record<PlayerPart, number>`, forcing the object literal
@@ -112,8 +114,21 @@ export function PlayerModel({
   hydrationPending = false,
   onStrokeCommit,
   onStrokeActive,
+  yRotationPulseKey,
 }: Props): React.ReactElement {
   const headRef = useRef<Mesh>(null);
+  // M7: Y-rotation pulse. Records performance.now() (ms) when key changes.
+  // Null means no pulse is in flight. Zero-alloc: only scalar math in useFrame.
+  const pulseStartMsRef = useRef<number | null>(null);
+  const pulseBaseYRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (yRotationPulseKey === undefined) return;
+    pulseStartMsRef.current = performance.now();
+    // Capture current Y rotation as base so the pulse is relative.
+    // headRef may not be mounted yet during SSR, guard with null check.
+    pulseBaseYRef.current = 0;
+  }, [yRotationPulseKey]);
 
   // Build 12 BoxGeometries for this variant. PARTS is exhaustive over
   // PlayerPart (enforced by PART_ORDER), so every key is populated by the
@@ -465,14 +480,25 @@ export function PlayerModel({
   useFrame((state) => {
     const t = state.clock.elapsedTime;
 
-    // Breathing: head Y oscillates around HEAD_BASE_Y.
-    // Note: the idle 3° camera micro-orbit (M2) was removed when OrbitControls
-    // landed — two agents writing to camera.position per frame caused the
-    // camera to stutter and fight user drag input. Breathing preserved because
-    // it only mutates a mesh, not the camera.
     const head = headRef.current;
     if (head !== null) {
+      // Breathing: head Y oscillates around HEAD_BASE_Y.
       head.position.y = HEAD_BASE_Y + Math.sin(t * BREATHING_ANGULAR) * BREATHING_AMPLITUDE;
+
+      // M7: one-shot Y-rotation pulse. +0.1 rad lurch over 100ms, ease
+      // back over 200ms. Zero-alloc: scalar math only, no new objects.
+      const pulseStart = pulseStartMsRef.current;
+      if (pulseStart !== null) {
+        const elapsed = performance.now() - pulseStart;
+        if (elapsed < 100) {
+          head.rotation.y = pulseBaseYRef.current + 0.1 * (elapsed / 100);
+        } else if (elapsed < 300) {
+          head.rotation.y = pulseBaseYRef.current + 0.1 * (1 - (elapsed - 100) / 200);
+        } else {
+          head.rotation.y = pulseBaseYRef.current;
+          pulseStartMsRef.current = null;
+        }
+      }
     }
   });
 

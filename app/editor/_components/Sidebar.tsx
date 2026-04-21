@@ -113,6 +113,7 @@ function BrushSizeRadio() {
     <div
       role="group"
       aria-label="Brush size"
+      data-pulse-target="brush"
       className="flex gap-1"
     >
       {BRUSH_SIZES.map((n) => {
