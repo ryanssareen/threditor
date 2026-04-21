@@ -4,6 +4,7 @@ import type { BrushSize, SavingState } from '@/lib/editor/store';
 import { useEditorStore } from '@/lib/editor/store';
 import type { SkinVariant } from '@/lib/editor/types';
 import { ColorPicker } from './ColorPicker';
+import { LayerPanel } from './LayerPanel';
 import { Toolbar } from './Toolbar';
 
 export function Sidebar({ className }: { className?: string }) {
@@ -14,7 +15,8 @@ export function Sidebar({ className }: { className?: string }) {
       <Toolbar />
       <VariantToggle />
       <BrushSizeRadio />
-      <ColorPicker className="flex-1" />
+      <ColorPicker />
+      <LayerPanel />
       <SavingStatusChip />
     </div>
   );
