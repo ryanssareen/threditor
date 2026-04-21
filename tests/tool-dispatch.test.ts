@@ -38,11 +38,14 @@ function makeCtx(overrides: Partial<StrokeContext> = {}): {
   const layer = overrides.layer ?? makeLayer();
   const flushSpy = vi.fn();
   const textureManager = {
-    flushLayer: flushSpy,
+    flushLayers: flushSpy,
+    composite: vi.fn(),
+    markDirty: vi.fn(),
   } as unknown as StrokeContext['textureManager'];
   const ctx: StrokeContext = {
     tool: 'pencil',
     layer,
+    layers: [layer],
     variant: 'classic',
     textureManager,
     activeColorHex: '#ff0000',
