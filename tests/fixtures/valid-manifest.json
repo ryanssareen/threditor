@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "categories": [
+    {
+      "id": "safe-wins",
+      "label": "Safe Wins",
+      "templates": [
+        {
+          "id": "classic-hoodie",
+          "label": "Classic Hoodie",
+          "variant": "classic",
+          "file": "/templates/classic/classic-hoodie.png",
+          "thumbnail": "/templates/thumbs/classic-hoodie.webp",
+          "license": "MIT",
+          "credit": "threditor team",
+          "tags": ["hoodie", "casual"],
+          "contextualHint": "Try the color picker to change the hoodie hue.",
+          "affordancePulse": "color"
+        },
+        {
+          "id": "slim-hoodie",
+          "label": "Slim Hoodie",
+          "variant": "slim",
+          "file": "/templates/slim/slim-hoodie.png",
+          "thumbnail": "/templates/thumbs/slim-hoodie.webp",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["hoodie", "slim"],
+          "contextualHint": "Use the mirror tool to keep both arms matching.",
+          "affordancePulse": "mirror"
+        }
+      ]
+    },
+    {
+      "id": "technique",
+      "label": "Technique",
+      "templates": [
+        {
+          "id": "brush-demo",
+          "label": "Brush Demo",
+          "variant": "classic",
+          "file": "/templates/classic/brush-demo.png",
+          "thumbnail": "/templates/thumbs/brush-demo.webp",
+          "license": "MIT",
+          "credit": "pixel artist",
+          "tags": ["brush", "demo"],
+          "contextualHint": "Experiment with different brush sizes.",
+          "affordancePulse": "brush"
+        }
+      ]
+    },
+    {
+      "id": "identity",
+      "label": "Identity",
+      "templates": [
+        {
+          "id": "blank-classic",
+          "label": "Blank Classic",
+          "variant": "classic",
+          "file": "/templates/classic/blank.png",
+          "thumbnail": "/templates/thumbs/blank-classic.webp",
+          "license": "MIT",
+          "credit": null,
+          "tags": ["blank", "minimal"],
+          "contextualHint": "Start from scratch — the canvas is yours.",
+          "affordancePulse": null
+        }
+      ]
+    },
+    {
+      "id": "base",
+      "label": "Base",
+      "templates": [
+        {
+          "id": "base-steve",
+          "label": "Base Steve",
+          "variant": "classic",
+          "file": "/templates/classic/base-steve.png",
+          "thumbnail": "/templates/thumbs/base-steve.webp",
+          "license": "MIT",
+          "credit": "Mojang (reference)",
+          "tags": ["base", "steve"],
+          "contextualHint": "Modify this classic base skin to make it your own.",
+          "affordancePulse": "color"
+        }
+      ]
+    }
+  ]
+}
