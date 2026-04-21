@@ -2,86 +2,95 @@
 
 /**
  * M3: responsive layout coordinator.
- *
- * Owns the single TextureManager + Layer the paint loop writes into and
- * the persistence subscription that auto-saves them to IndexedDB. Hands
- * them to the two consumers that need synchronized pixel views:
- *
- *   - `ViewportUV` (2D paint surface) — mounts TM's offscreen canvas
- *     into its own DOM with CSS transform for zoom/pan.
- *   - `EditorCanvas` (3D viewport) — passes TM's `CanvasTexture` to
- *     `PlayerModel` as the material map.
- *
- * Also renders the `Sidebar` (ColorPicker + Toolbar + VariantToggle +
- * BrushSizeRadio + SavingStatus chip).
- *
- * Desktop ≥640px: `[3D | 2D | Sidebar 280px]` horizontal split.
- * Mobile <640px: `[3D 30vh][2D 40vh][Sidebar remaining, safe-area-inset]`
- * vertical stack.
+ * M6: multi-layer aware. Resolves `activeLayer` from the store and
+ * threads it to paint surfaces. Owns the `TextureManager` (via the
+ * bundle hook), the persistence subscription, and (forthcoming Unit 7)
+ * the UndoStack + Cmd+Z keydown listener.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { initPersistence, loadDocument } from '@/lib/editor/persistence';
 import { useEditorStore } from '@/lib/editor/store';
 import { useTextureManagerBundle } from '@/lib/editor/use-texture-manager';
+import type { Layer } from '@/lib/editor/types';
 import { EditorCanvas } from './EditorCanvas';
 import { Sidebar } from './Sidebar';
 import { ViewportUV } from './ViewportUV';
 
 export function EditorLayout() {
   const variant = useEditorStore((s) => s.variant);
+  const layers = useEditorStore((s) => s.layers);
+  const activeLayerId = useEditorStore((s) => s.activeLayerId);
   const bundle = useTextureManagerBundle(variant);
 
-  // Hold the current layer in a ref so persistence can read the freshest
-  // pixel buffer at flush time without re-subscribing on every change.
-  const layerRef = useRef(bundle?.layer ?? null);
-  layerRef.current = bundle?.layer ?? null;
+  // Resolve the active layer from the store. Falls back to the last
+  // layer if activeLayerId has drifted (which the store guards against,
+  // but belt-and-suspenders for hydration timing).
+  const activeLayer: Layer | null = useMemo(() => {
+    if (layers.length === 0) return null;
+    return layers.find((l) => l.id === activeLayerId) ?? layers[layers.length - 1];
+  }, [layers, activeLayerId]);
+
+  // Hold the full layers array in a ref so persistence reads the freshest
+  // pixel buffers at flush time without re-subscribing on every change.
+  const layersRef = useRef(layers);
+  layersRef.current = layers;
 
   // markDirty is threaded as a prop to ViewportUV so the persistence
-  // singleton is not module-scope. Starts as a no-op during hydration;
-  // updated to the real closure once initPersistence returns.
+  // singleton is not module-scope.
   const markDirtyRef = useRef<() => void>(() => {});
 
   // M4 Unit 0 (P1 from M3 review): hydrationPending gates paint interaction
-  // until loadDocument() resolves. Without this gate, a user who starts
-  // painting between bundle-mount and hydrate-resolution has their fresh
-  // strokes clobbered by `bundle.layer.pixels.set(saved.pixels)` below.
-  // Flips false exactly once per bundle lifecycle; stays false for the
-  // rest of the session (hydration only happens once per variant TM).
+  // until loadDocument() resolves.
   const [hydrationPending, setHydrationPending] = useState(true);
 
-  // Hydrate from IndexedDB then install persistence — sequenced so that
-  // initPersistence cannot fire a write with blank pixels before the saved
-  // doc is copied into the layer. A race between the probe completing and
-  // loadDocument returning is prevented by not installing persistence at all
-  // until after loadDocument settles.
+  // Hydrate from IndexedDB then install persistence.
   useEffect(() => {
     if (bundle === null) return;
     let cancelled = false;
     let persistenceCleanup: (() => void) | undefined;
 
-    // Reset the gate on every bundle (i.e., on variant toggle — a new TM
-    // means a new hydrate is pending). Paint surfaces disable interaction
-    // until we flip back to false at the end of the async flow.
     setHydrationPending(true);
 
     (async () => {
       const doc = await loadDocument();
       if (cancelled) return;
 
-      if (doc !== null) {
-        // Restore: copy the saved pixels into the current Layer and
-        // recomposite. We avoid swapping Layer objects because that would
-        // tear down / rebuild the TextureManager unnecessarily.
-        const saved = doc.layers[0];
-        if (
-          saved !== undefined &&
-          saved.pixels instanceof Uint8ClampedArray &&
-          saved.pixels.length === bundle.layer.pixels.length
-        ) {
-          bundle.layer.pixels.set(saved.pixels);
-          bundle.textureManager.composite([bundle.layer]);
+      if (doc !== null && doc.layers.length > 0) {
+        // M6: restore all layers. Validate each layer's pixel length;
+        // fall back silently on malformed records.
+        const restored: Layer[] = [];
+        for (const saved of doc.layers) {
+          if (
+            saved.pixels instanceof Uint8ClampedArray &&
+            saved.pixels.length === 64 * 64 * 4
+          ) {
+            restored.push({
+              id: saved.id,
+              name: saved.name,
+              visible: saved.visible,
+              opacity:
+                typeof saved.opacity === 'number' && saved.opacity >= 0 && saved.opacity <= 1
+                  ? saved.opacity
+                  : 1,
+              blendMode:
+                saved.blendMode === 'multiply' ||
+                saved.blendMode === 'overlay' ||
+                saved.blendMode === 'screen'
+                  ? saved.blendMode
+                  : 'normal',
+              pixels: saved.pixels,
+            });
+          }
+        }
+        if (restored.length > 0) {
+          useEditorStore.getState().setLayers(restored);
+          const activeStillExists = restored.some((l) => l.id === doc.activeLayerId);
+          useEditorStore.getState().setActiveLayerId(
+            activeStillExists ? doc.activeLayerId : restored[restored.length - 1].id,
+          );
+          bundle.textureManager.composite(restored);
         }
         if (
           (doc.variant === 'classic' || doc.variant === 'slim') &&
@@ -93,12 +102,12 @@ export function EditorLayout() {
 
       if (!cancelled) {
         const { markDirty, cleanup } = initPersistence({
-          getLayer: () => layerRef.current,
+          getLayers: () => layersRef.current,
+          getActiveLayerId: () => useEditorStore.getState().activeLayerId,
           createdAt: doc?.createdAt,
         });
         markDirtyRef.current = markDirty;
         persistenceCleanup = cleanup;
-        // Open the paint gate AFTER hydrate + persistence install complete.
         setHydrationPending(false);
       }
     })();
@@ -108,12 +117,19 @@ export function EditorLayout() {
       persistenceCleanup?.();
       markDirtyRef.current = () => {};
     };
-    // layerRef is stable; bundle change triggers a fresh hydrate pass.
-    // variant intentionally excluded — we hydrate once per bundle (which
-    // already changes on variant) and otherwise let the save path
-    // persist the new variant naturally.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bundle]);
+
+  // Recomposite whenever layer metadata (visibility, opacity, blend mode,
+  // or layer-set identity) changes. Pixel mutations do NOT trigger this
+  // — paint surfaces flush via `textureManager.flushLayer` during the
+  // stroke and call `composite` on pointerup.
+  useEffect(() => {
+    if (bundle === null) return;
+    if (layers.length === 0) return;
+    bundle.textureManager.composite(layers);
+    markDirtyRef.current();
+  }, [bundle, layers]);
 
   return (
     <div className="flex h-dvh w-dvw flex-col sm:flex-row">
@@ -122,17 +138,17 @@ export function EditorLayout() {
           texture={bundle?.textureManager.getTexture() ?? null}
           variant={variant}
           textureManager={bundle?.textureManager}
-          layer={bundle?.layer}
+          layer={activeLayer ?? undefined}
           markDirty={() => markDirtyRef.current()}
           hydrationPending={hydrationPending}
         />
       </div>
 
       <div className="relative h-[40vh] w-full shrink-0 sm:h-full sm:w-auto sm:flex-1">
-        {bundle !== null ? (
+        {bundle !== null && activeLayer !== null ? (
           <ViewportUV
             textureManager={bundle.textureManager}
-            layer={bundle.layer}
+            layer={activeLayer}
             markDirty={() => markDirtyRef.current()}
             hydrationPending={hydrationPending}
             className="h-full w-full"

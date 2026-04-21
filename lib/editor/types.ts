@@ -33,18 +33,35 @@ export type SkinDocument = {
 };
 
 /**
- * Undo/redo diff record. One per user gesture (mousedown → mouseup),
- * not per pixel. Mirror strokes produce one record with bbox spanning
- * both sides and mirrored: true.
+ * Bbox in atlas pixel space. Top-left origin. Used by stamp out-params
+ * (zero-alloc hot path), undo-stack dirty-rect diffs, and union math.
  */
-export type Stroke = {
-  id: string;
-  layerId: string;
-  bbox: { x: number; y: number; w: number; h: number };
+export type Bbox = { x: number; y: number; w: number; h: number };
+
+/**
+ * M6: a single dirty-rect diff inside a stroke. For a non-mirrored stroke
+ * there is exactly one patch; for a mirrored stroke there are two
+ * (primary + mirror). Each patch's before/after are tight bbox slices,
+ * not whole-layer snapshots — per DESIGN §4 and plan D2.
+ */
+export type StrokePatch = {
+  bbox: Bbox;
   /** Length = bbox.w * bbox.h * 4 */
   before: Uint8ClampedArray;
   /** Length = bbox.w * bbox.h * 4 */
   after: Uint8ClampedArray;
+};
+
+/**
+ * Undo/redo diff record. One per user gesture (pointerdown → pointerup).
+ *
+ * Mirror strokes produce ONE Stroke record with `patches.length === 2`
+ * and `mirrored: true`. Undo/redo restores both sides in a single step.
+ */
+export type Stroke = {
+  id: string;
+  layerId: string;
+  patches: StrokePatch[];
   tool: 'pencil' | 'eraser' | 'bucket';
   mirrored: boolean;
 };
