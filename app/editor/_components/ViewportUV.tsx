@@ -26,12 +26,13 @@ import { getIslandMap, islandIdAt, isOverlayIsland } from '@/lib/editor/island-m
 import {
   samplePickerAt,
   strokeContinue,
+  strokeEnd,
   strokeStart,
   type StrokeContext,
 } from '@/lib/editor/tools/dispatch';
 import { useAltHeld } from '@/lib/editor/use-alt-held';
 import { pickerStateFromHex } from '@/lib/color/picker-state';
-import type { Layer } from '@/lib/editor/types';
+import type { Layer, Stroke } from '@/lib/editor/types';
 import type { TextureManager } from '@/lib/editor/texture';
 import { cursorForTool } from './BrushCursor';
 import { BucketHoverOverlay } from './BucketHoverOverlay';
@@ -52,10 +53,29 @@ type Props = {
    * `bundle.layer.pixels.set(saved.pixels)`. EditorLayout owns this flag.
    */
   hydrationPending?: boolean;
+  /**
+   * M6: called when a stroke completes with its captured diff. EditorLayout
+   * plumbs this into UndoStack.push. Optional so this component stays
+   * usable in tests without an undo stack.
+   */
+  onStrokeCommit?: (stroke: Stroke) => void;
+  /**
+   * M6: bridges the local paintingRef into the store's strokeActive slot
+   * so the undo shortcut can gate on D10. Optional.
+   */
+  onStrokeActive?: (active: boolean) => void;
   className?: string;
 };
 
-export function ViewportUV({ textureManager, layer, markDirty, hydrationPending = false, className }: Props) {
+export function ViewportUV({
+  textureManager,
+  layer,
+  markDirty,
+  hydrationPending = false,
+  onStrokeCommit,
+  onStrokeActive,
+  className,
+}: Props) {
   // Narrow subscriptions — each one re-renders ViewportUV only when its
   // own slice changes. Pointer-move writes never hit the store.
   const activeTool = useEditorStore((s) => s.activeTool);
@@ -308,6 +328,8 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
         activeColorHex: activeColor.hex,
         brushSize,
         mirrorEnabled,
+        onStrokeCommit,
+        onStrokeActive,
       };
       const changed = strokeStart(ctx, atlas.ax, atlas.ay);
       if (!changed) return;
@@ -340,6 +362,8 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       variant,
       mirrorEnabled,
       setActiveColor,
+      onStrokeCommit,
+      onStrokeActive,
     ],
   );
 
@@ -403,6 +427,8 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
         activeColorHex: activeColor.hex,
         brushSize,
         mirrorEnabled,
+        onStrokeCommit,
+        onStrokeActive,
       };
       strokeContinue(
         ctx,
@@ -426,6 +452,8 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
       variant,
       mirrorEnabled,
       setHoveredPixel,
+      onStrokeCommit,
+      onStrokeActive,
     ],
   );
 
@@ -448,12 +476,40 @@ export function ViewportUV({ textureManager, layer, markDirty, hydrationPending 
     paintingRef.current = false;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     if (wasPainting) {
+      // M6: close the stroke recorder — emits Stroke record via onStrokeCommit
+      // (if provided) and flips onStrokeActive(false). The ctx is rebuilt
+      // from current values; strokeEnd only uses layer + the two callbacks.
+      const ctx: StrokeContext = {
+        tool: activeTool,
+        layer,
+        layers,
+        variant,
+        textureManager,
+        activeColorHex: activeColor.hex,
+        brushSize,
+        mirrorEnabled,
+        onStrokeCommit,
+        onStrokeActive,
+      };
+      strokeEnd(ctx);
       // Authoritative multi-layer composite at stroke end. During the stroke
       // flushLayers() keeps the canvas up to date (M6: full composite path).
       textureManager.composite(layers);
       markDirty();
     }
-  }, [textureManager, layers, markDirty]);
+  }, [
+    textureManager,
+    layer,
+    layers,
+    variant,
+    activeTool,
+    activeColor.hex,
+    brushSize,
+    mirrorEnabled,
+    onStrokeCommit,
+    onStrokeActive,
+    markDirty,
+  ]);
 
   const cursor = isSpaceHeld ? 'grab' : cursorForTool(activeTool);
   const showGrid = uvZoom >= GRID_THRESHOLD;

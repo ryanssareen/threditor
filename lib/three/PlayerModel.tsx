@@ -54,13 +54,14 @@ import { resolveOverlayHit } from './overlay-map';
 import { clampAtlas } from './atlas-math';
 import {
   samplePickerAt,
+  strokeEnd,
   strokeStart,
   type StrokeContext,
 } from '@/lib/editor/tools/dispatch';
 import { useAltHeld } from '@/lib/editor/use-alt-held';
 import { pickerStateFromHex } from '@/lib/color/picker-state';
 import { useEditorStore } from '@/lib/editor/store';
-import type { Layer } from '@/lib/editor/types';
+import type { Layer, Stroke } from '@/lib/editor/types';
 import type { TextureManager } from '@/lib/editor/texture';
 
 type Props = {
@@ -75,6 +76,9 @@ type Props = {
   // M4 Unit 0 gate mirror (same contract as ViewportUV). When true, pointer
   // events early-return so hydration cannot overwrite in-flight strokes.
   hydrationPending?: boolean;
+  // M6: stroke-commit + strokeActive bridges. Optional; EditorLayout wires.
+  onStrokeCommit?: (stroke: Stroke) => void;
+  onStrokeActive?: (active: boolean) => void;
 };
 
 // PART_ORDER is typed `Record<PlayerPart, number>`, forcing the object literal
@@ -106,6 +110,8 @@ export function PlayerModel({
   layer,
   markDirty,
   hydrationPending = false,
+  onStrokeCommit,
+  onStrokeActive,
 }: Props): React.ReactElement {
   const headRef = useRef<Mesh>(null);
 
@@ -278,6 +284,8 @@ export function PlayerModel({
         activeColorHex,
         brushSize,
         mirrorEnabled,
+        onStrokeCommit,
+        onStrokeActive,
       };
       const changed = strokeStart(ctx, resolved.x, resolved.y);
       if (!changed) {
@@ -309,6 +317,8 @@ export function PlayerModel({
       brushSize,
       mirrorEnabled,
       setActiveColor,
+      onStrokeCommit,
+      onStrokeActive,
     ],
   );
 
@@ -375,6 +385,8 @@ export function PlayerModel({
         activeColorHex,
         brushSize,
         mirrorEnabled,
+        onStrokeCommit,
+        onStrokeActive,
       };
       strokeStart(ctx, resolved.x, resolved.y);
       lastPaintedXRef.current = resolved.x;
@@ -391,6 +403,8 @@ export function PlayerModel({
       activeColorHex,
       brushSize,
       mirrorEnabled,
+      onStrokeCommit,
+      onStrokeActive,
     ],
   );
 
@@ -401,13 +415,38 @@ export function PlayerModel({
     // dispatch events normally again.
     (e.target as Element).releasePointerCapture?.(e.pointerId);
     if (textureManager !== undefined && layer !== undefined) {
-      // Authoritative multi-layer composite at stroke end — mirrors
-      // ViewportUV's M3 pattern (flushLayer fast path during stroke,
-      // full composite at pointer-up).
+      // M6: close the stroke recorder → emits Stroke record via onStrokeCommit
+      // and flips onStrokeActive(false).
+      const ctx: StrokeContext = {
+        tool: activeTool,
+        layer,
+        layers,
+        variant,
+        textureManager,
+        activeColorHex,
+        brushSize,
+        mirrorEnabled,
+        onStrokeCommit,
+        onStrokeActive,
+      };
+      strokeEnd(ctx);
+      // Authoritative multi-layer composite at stroke end.
       textureManager.composite(layers);
       markDirty?.();
     }
-  }, [textureManager, layer, layers, markDirty]);
+  }, [
+    textureManager,
+    layer,
+    layers,
+    markDirty,
+    activeTool,
+    variant,
+    activeColorHex,
+    brushSize,
+    mirrorEnabled,
+    onStrokeCommit,
+    onStrokeActive,
+  ]);
 
   const handlePointerOut = useCallback(() => {
     if (
