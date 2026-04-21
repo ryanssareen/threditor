@@ -128,6 +128,23 @@ export function EditorLayout() {
         ) {
           useEditorStore.setState({ variant: doc.variant });
         }
+
+        // M7 Unit 8: restore template-aware flags from IDB. These drive
+        // the Ghost-picker gate on next mount and the M8 export
+        // guardrail. Transient UI state (activeContextualHint,
+        // pulseTarget) is NOT restored — on reload mid-transition the
+        // hint/pulse default to null (the apply-template itself has
+        // already landed in IDB; only the post-apply timeline is lost).
+        useEditorStore.setState({
+          hasEditedSinceTemplate:
+            typeof doc.hasEditedSinceTemplate === 'boolean'
+              ? doc.hasEditedSinceTemplate
+              : true,
+          lastAppliedTemplateId:
+            typeof doc.lastAppliedTemplateId === 'string'
+              ? doc.lastAppliedTemplateId
+              : null,
+        });
       }
 
       if (!cancelled) {
@@ -135,6 +152,10 @@ export function EditorLayout() {
           getLayers: () => layersRef.current,
           getActiveLayerId: () => useEditorStore.getState().activeLayerId,
           createdAt: doc?.createdAt,
+          getHasEditedSinceTemplate: () =>
+            useEditorStore.getState().hasEditedSinceTemplate,
+          getLastAppliedTemplateId: () =>
+            useEditorStore.getState().lastAppliedTemplateId,
         });
         markDirtyRef.current = markDirty;
         persistenceCleanup = cleanup;
