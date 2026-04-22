@@ -1,0 +1,230 @@
+// @vitest-environment jsdom
+//
+// M8 Unit 2 + 3: ExportDialog tests.
+
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { ExportDialog } from '../app/editor/_components/ExportDialog';
+import { useEditorStore } from '../lib/editor/store';
+import type { Layer } from '../lib/editor/types';
+
+// Mock the export module so the dialog tests don't depend on the
+// canvas + toBlob plumbing (already covered by tests/export.test.ts).
+vi.mock('../lib/editor/export', () => ({
+  exportLayersToBlob: vi.fn(async () => new Blob([new Uint8Array([1])], { type: 'image/png' })),
+  downloadBlob: vi.fn(async () => {}),
+  buildExportFilename: (variant: string) => `skin-${variant}-stub.png`,
+  sanitizeFilename: (s: string) => s,
+}));
+
+import * as exportMod from '../lib/editor/export';
+
+// @ts-expect-error — React 19 act env flag
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const makeLayer = (id: string): Layer => ({
+  id,
+  name: id,
+  visible: true,
+  opacity: 1,
+  blendMode: 'normal',
+  pixels: new Uint8ClampedArray(64 * 64 * 4),
+});
+
+function resetStore() {
+  useEditorStore.setState({
+    variant: 'classic',
+    hasEditedSinceTemplate: false,
+    lastAppliedTemplateId: null,
+  });
+}
+
+describe('ExportDialog', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeAll(() => {
+    // jsdom polyfills
+    if (typeof URL.createObjectURL !== 'function') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (URL as any).createObjectURL = () => 'blob:stub';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (URL as any).revokeObjectURL = () => {};
+    }
+  });
+
+  beforeEach(() => {
+    resetStore();
+    vi.mocked(exportMod.exportLayersToBlob).mockClear();
+    vi.mocked(exportMod.downloadBlob).mockClear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    document.body.removeChild(container);
+  });
+
+  const render = (open: boolean, onClose = () => {}) => {
+    act(() => {
+      root.render(
+        <ExportDialog
+          open={open}
+          onClose={onClose}
+          getLayers={() => [makeLayer('base')]}
+        />,
+      );
+    });
+  };
+
+  const $ = (testid: string): HTMLElement | null =>
+    document.querySelector(`[data-testid="${testid}"]`);
+
+  // ── Unit 2: normal dialog ──
+
+  it('does not render when open=false', () => {
+    render(false);
+    expect($('export-dialog')).toBeNull();
+  });
+
+  it('renders normal body when no guardrail', () => {
+    render(true);
+    expect($('export-dialog')).not.toBeNull();
+    expect($('export-dialog-guardrail')).toBeNull();
+  });
+
+  it('preselects variant matching current store variant', () => {
+    useEditorStore.setState({ variant: 'slim' });
+    render(true);
+    const slimRadio = document.querySelector<HTMLInputElement>(
+      'input[name="export-variant"][value="slim"]',
+    );
+    expect(slimRadio?.checked).toBe(true);
+  });
+
+  it('shows mismatch warning when user picks non-current variant', () => {
+    render(true);
+    expect($('export-variant-mismatch')).toBeNull();
+    // Click the label — React's onChange fires from the synthetic click
+    // on the native input (hidden via sr-only but still focusable).
+    const slimLabel = $('export-variant-slim') as HTMLLabelElement;
+    act(() => {
+      slimLabel.click();
+    });
+    expect($('export-variant-mismatch')).not.toBeNull();
+  });
+
+  it('clicking Export calls exportLayersToBlob + downloadBlob + onClose', async () => {
+    const onClose = vi.fn();
+    render(true, onClose);
+    const btn = $('export-submit') as HTMLButtonElement;
+
+    await act(async () => {
+      btn.click();
+      // Wait for the async handleExport chain to settle.
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(exportMod.exportLayersToBlob).toHaveBeenCalledTimes(1);
+    expect(exportMod.downloadBlob).toHaveBeenCalledTimes(1);
+    expect(exportMod.downloadBlob).toHaveBeenCalledWith(
+      expect.any(Blob),
+      'skin-classic-stub.png',
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape key closes the dialog', () => {
+    const onClose = vi.fn();
+    render(true, onClose);
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('backdrop click closes the dialog', () => {
+    const onClose = vi.fn();
+    render(true, onClose);
+    act(() => {
+      ($('export-dialog-backdrop') as HTMLElement).click();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel button closes without exporting', () => {
+    const onClose = vi.fn();
+    render(true, onClose);
+    act(() => {
+      ($('export-cancel') as HTMLButtonElement).click();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(exportMod.exportLayersToBlob).not.toHaveBeenCalled();
+  });
+
+  // ── Unit 3: guardrail branch ──
+
+  it('renders guardrail body when template applied + zero edits', () => {
+    useEditorStore.setState({
+      hasEditedSinceTemplate: false,
+      lastAppliedTemplateId: 'identity:whitedogg',
+    });
+    render(true);
+    expect($('export-dialog-guardrail')).not.toBeNull();
+    expect($('export-dialog')).toBeNull();
+  });
+
+  it('guardrail does NOT render for fresh session (no template)', () => {
+    useEditorStore.setState({
+      hasEditedSinceTemplate: false,
+      lastAppliedTemplateId: null,
+    });
+    render(true);
+    expect($('export-dialog')).not.toBeNull();
+    expect($('export-dialog-guardrail')).toBeNull();
+  });
+
+  it('guardrail does NOT render after at least one edit', () => {
+    useEditorStore.setState({
+      hasEditedSinceTemplate: true,
+      lastAppliedTemplateId: 'identity:whitedogg',
+    });
+    render(true);
+    expect($('export-dialog')).not.toBeNull();
+    expect($('export-dialog-guardrail')).toBeNull();
+  });
+
+  it('"Edit first" closes the dialog without exporting', () => {
+    useEditorStore.setState({
+      hasEditedSinceTemplate: false,
+      lastAppliedTemplateId: 'identity:whitedogg',
+    });
+    const onClose = vi.fn();
+    render(true, onClose);
+    act(() => {
+      ($('export-guardrail-edit-first') as HTMLButtonElement).click();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(exportMod.exportLayersToBlob).not.toHaveBeenCalled();
+  });
+
+  it('"Export anyway" proceeds with export', async () => {
+    useEditorStore.setState({
+      hasEditedSinceTemplate: false,
+      lastAppliedTemplateId: 'identity:whitedogg',
+    });
+    const onClose = vi.fn();
+    render(true, onClose);
+    await act(async () => {
+      ($('export-guardrail-anyway') as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(exportMod.exportLayersToBlob).toHaveBeenCalledTimes(1);
+    expect(exportMod.downloadBlob).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});

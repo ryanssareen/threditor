@@ -23,6 +23,7 @@ import type { Layer, Stroke, TemplateMeta } from '@/lib/editor/types';
 import { AffordancePulse } from './AffordancePulse';
 import { ContextualHintOverlay } from './ContextualHintOverlay';
 import { EditorCanvas } from './EditorCanvas';
+import { ExportDialog } from './ExportDialog';
 import type { LayerLifecycleCommand } from './LayerPanel';
 import { Sidebar } from './Sidebar';
 import { TemplateGate } from './TemplateGate';
@@ -74,6 +75,9 @@ export function EditorLayout() {
   // M7 Unit 7: crossfade + Y-rotation pulse keys. Bumped on successful apply.
   const [texFadeKey, setTexFadeKey] = useState(0);
   const [yRotationPulseKey, setYRotationPulseKey] = useState(0);
+
+  // M8 Unit 2: export dialog open state.
+  const [exportOpen, setExportOpen] = useState(false);
 
   // Undo/redo button reactivity: bump a version counter when the stack
   // mutates so canUndo/canRedo checks re-run during render.
@@ -428,8 +432,16 @@ export function EditorLayout() {
           canRedo={undoStack.canRedo()}
           onUndo={handleUndo}
           onRedo={handleRedo}
+          onOpenExport={() => setExportOpen(true)}
         />
       </aside>
+
+      {/* M8 Unit 2: export dialog */}
+      <ExportDialog
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        getLayers={() => layersRef.current}
+      />
     </div>
   );
 }
