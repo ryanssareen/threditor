@@ -12,6 +12,10 @@ export const TIMING = {
   PULSE_DELAY_MS: 1000,
   PULSE_DURATION_MS: 600,
   CROSSFADE_MS: 200,
+  // M8 Unit 7/8: first-paint sequence. Fires on cold editor-land when
+  // no template has been applied. Reuses the same hint/pulse infra.
+  FIRST_PAINT_GLOW_MS: 600,
+  FIRST_PAINT_PULSE_MS: 1600,
 } as const;
 
 const VALID_PULSE_TARGETS = new Set<AffordancePulseTarget>(['color', 'mirror', 'brush', null]);
