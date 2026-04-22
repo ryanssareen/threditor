@@ -514,3 +514,88 @@
 - `app/editor/_components/TemplateBottomSheet.tsx` — copy this ARIA/focus-trap shape for `ExportDialog`.
 - `lib/editor/templates.ts` TIMING table — extend it with M8's first-paint milestones if they need persistence; otherwise the hook-local constants are fine.
 - `docs/plans/m8-export-polish-plan.md` D15 — the three.js `opaque_fragment` correction DESIGN §10 has now shipped.
+
+## M8: Export + Onboarding Polish — 2026-04-22
+
+### What worked
+
+- **Reusing `TextureManager` as the export compositor.** `lib/editor/export.ts::exportLayersToBlob` instantiates a `TextureManager` against a throwaway canvas using the M6 amendment-1 constructor injection (`new TextureManager(canvas, ctx, scratchCanvas, scratchCtx)`). Zero duplicated pipeline; all blend-mode, opacity, and alpha-correct compositing is inherited. The pixel-parity test compares exported bytes against `composite()` bytes byte-for-byte and passes. Pattern: when a new feature needs a compositor that the app already has, inject a throwaway target canvas rather than extracting the pipeline.
+- **Plan Unit 0 fixed the DESIGN §10 shader-token bug BEFORE any shader code was written.** M7's COMPOUND recommended reading DESIGN §10; if M8 had followed it literally, the grayscale injection would have silently no-op'd on three 0.184 because `#include <output_fragment>` had been renamed to `#include <opaque_fragment>` in three r152. External research in the planning phase caught the rename; Unit 0 amended DESIGN before Unit 4 wrote the module. Pattern: when a DESIGN snippet is known-stale against a dependency, the doc fix is a Unit 0, not a note-to-self during review.
+- **Shared-uniform escape hatch for `customProgramCacheKey`.** `grayscaleUniform = { value: false }` is a module-scoped singleton; every patched `meshStandardMaterial` attaches `shader.uniforms.uGrayscale = grayscaleUniform` at compile, referencing the SAME object. Mutating `.value` propagates to all 12 PlayerModel meshes without a recompile and without needing per-material cache keys. The three.js docs' footgun (twelve meshes sharing one compiled program where only the first-compiled flag is honored) simply doesn't apply to uniform-only changes. Pattern: if a feature needs a toggled uniform across multiple materials, a shared uniform object is strictly simpler than per-material `customProgramCacheKey` management.
+- **Reusing M7's TIMING + ContextualHintOverlay + AffordancePulse for first-paint.** The M7 infrastructure was built for template-to-edit transitions, but the same primitives (hint at +700ms, pulse at +1000ms, Y-rotation at +1600ms) work identically for the cold editor-land path. M8's first-paint hook is just a new trigger that writes to the same store slots. Zero new visual primitives. Pattern: when a new feature matches an existing animation vocabulary, widening the triggering surface beats building a parallel system.
+- **Folded first-paint Y-rotation pulse into M7's `yRotationPulseKey` state.** Rather than adding `firstPaintPulseKey` as a separate piece of state, M8 Unit 8 proved that first-paint and template-apply Y-rotations never overlap (template-apply requires user interaction after first-paint has completed) and reuses the single key. One state slot, one PlayerModel prop, identical visuals.
+- **Hand-rolled ARIA dialog + focus trap reused (again) from `TemplateBottomSheet` for `ExportDialog`.** Same ~80-LOC pattern: `role="dialog"`, `aria-modal="true"`, focus trap on mount, Escape to close, backdrop click to close, focus restore on close. Zero new `@radix-ui` dependency. Bundle cost +2 KB for the whole ExportDialog.
+- **Progressive enhancement for `showSaveFilePicker`.** Chromium-only native picker for 2026; anchor-click fallback for Firefox/Safari. User-cancelled native picker (AbortError) is swallowed without falling back to anchor-click — prevents the double-dialog UX wart where cancelling the native picker opened a browser download anyway.
+- **Explicit `{ colorSpace: 'srgb' }` on export canvas `getContext`.** Chrome's default color-space conversion on toBlob encode was flagged in research; explicit sRGB pinning keeps exported RGB values identical to what's in `layer.pixels`. Safety rail; may or may not have mattered in practice.
+
+### What didn't
+
+- **`blob.arrayBuffer` is missing from jsdom's Blob.** Discovered at test-write time; polyfilled in `tests/export.test.ts` via `FileReader.readAsArrayBuffer`. Not a stopper but worth pinning: any future test that reads Blob bytes via `arrayBuffer()` in jsdom must either polyfill or refactor to use the callback form.
+- **`URL.createObjectURL` also missing from jsdom.** Same polyfill block at top of the test file.
+- **`HTMLCanvasElement.prototype.toBlob` is a no-op in jsdom** — returns null via the callback. The test file stubs it to emit a synthetic `<PNG-signature><backing-bytes>` Blob. This isn't a real PNG; the pixel-parity test compares the backing bytes directly, not a decoded PNG. For "does the file actually open in Minecraft?" acceptance, manual in-game QA remains the only signal (documented in Unit 10 checklist).
+- **React 19 + jsdom `setInputValue + dispatchEvent` doesn't trigger onChange.** Setting `input.checked = true` + dispatching a native `change` event didn't trip React's synthetic onChange on the export-dialog variant selector. Switched to clicking the `<label>` element (sr-only radio inside) — React's onChange fires from the label click. Pattern: for radio/checkbox tests in React 19 + jsdom, click the associated label, not the input.
+- **Variant-selector mismatch test caught a semantic question.** The radio group reflects dialog-local state (not the store) so the user can export as a different variant without flipping the editor's variant. Intentional per the plan; the mismatch warning surfaces the override. No bug, just a design decision worth re-stating in the next COMPOUND entry.
+
+### Invariants discovered
+
+- **Export's output canvas is short-lived and MUST NOT be the TextureManager's live canvas.** The TM canvas feeds the R3F renderer; blitting through it mid-render would produce a flash. `createExportCanvas()` allocates a fresh 64×64 canvas scoped to the export call; `tm.dispose()` runs in the finally block.
+- **`canvas.toBlob(cb, 'image/png')` — no quality arg ever.** MDN confirms the third argument is ignored for PNG. Passing it doesn't cause a bug but it signals misunderstanding; the export module comment captures this.
+- **The `opaque_fragment` chunk is the three.js 0.184 canonical token.** Inline-commented in `grayscale-shader.ts` so a future reader doesn't re-rediscover the r152 rename.
+- **Shared uniform objects propagate to the GPU without recompile.** `shader.uniforms.uGrayscale = grayscaleUniform` is shared ref; mutating `.value` is a GPU-cheap uniform update next frame. This is the documented three.js idiom for runtime flag toggles across material instances.
+- **Dialog focus trap pattern is copy-pasteable.** `TemplateBottomSheet` + `ExportDialog` share the exact same focus-trap code. A future Unit that needs another modal should copy once more; extracting to a shared hook would save ~20 LOC but cost readability. Threshold: 3 uses = extract.
+- **First-paint sequence cancels on first stroke via a store subscription.** The M7 `markEdited` chokepoint flips `hasEditedSinceTemplate: false → true`. A `useEditorStore.subscribe` in EditorLayout observes that transition and calls `cancelFirstPaint()`. Zero per-tool changes. Same pattern the M6/M7 dispatcher chokepoint invariant describes, now extended to a new consumer.
+
+### Gotchas for future milestones
+
+- **The export module accesses `document.createElement('canvas')` inside `exportLayersToBlob`.** SSR-safe-by-accident because the function is only called from click handlers inside client components. If a future server-side export path emerges (pre-rendered OG images for shared skins, say), this module needs a headless canvas replacement (`node-canvas`, `@napi-rs/canvas`, or moving to offscreen). M9+ concern.
+- **The first-paint hook fires only when `lastAppliedTemplateId === null`.** Returning users with a saved template reload and skip the sequence — correct per DESIGN intent. But if a future milestone adds "tutorial mode" (replayable for any user), it needs a different gate.
+- **`data-first-paint` attribute on the root div scopes the cursor-glow CSS.** If a future UI restructures EditorLayout's root element, the CSS selector `[data-first-paint="true"] [data-pulse-target="brush"]` breaks silently. Grep before refactoring root-level attributes.
+- **`showSaveFilePicker` requires HTTPS + user gesture.** Works on localhost but fails on plain-HTTP staging envs. If a non-HTTPS preview ever exists, the picker code silently falls back to anchor-click — user sees a filename-auto-generated download instead of a picker. Acceptable; documented here for anyone debugging "why doesn't the native picker show on the staging preview."
+- **The Luminance CSS filter is scoped to `<ViewportUV>`'s outer div.** If a future feature adds an overlay inside ViewportUV that SHOULD stay in color (a color-picker inside the 2D view, say), it'll desaturate with everything else. Either move the filter to a deeper container or add an `!important` override on the exception.
+- **`canvas.toBlob` stubbed in tests does not validate the PNG CRC or chunk structure.** Real Minecraft-compatibility QA is in-game only. If export breaks in a future refactor, expect the unit tests to pass and in-game QA to catch it. Consider adding a node-side PNG parse step to `tests/export.test.ts` via a pure-Node decoder if this becomes a recurring miss.
+
+### Pinned facts for next milestones
+
+**Exact version deltas from M7:** none. Zero new dependencies across M8. Hand-rolled export + hand-rolled dialog + hand-rolled shader-patch module. All M7 pins unchanged.
+
+**File paths established:**
+
+- `lib/editor/export.ts` — `exportLayersToBlob`, `downloadBlob`, `buildExportFilename`, `sanitizeFilename`. Pure module, zero React/zustand imports.
+- `lib/editor/grayscale-shader.ts` — `grayscaleUniform: { value: boolean }` + `patchMaterial(material)`. Pure module (only three `Material` type import).
+- `app/editor/_components/ExportDialog.tsx` — ARIA dialog. Guardrail branch and normal branch.
+- `app/editor/_components/LuminanceToggle.tsx` — top-center pill. Mounts in the 3D pane.
+- Store additions: `luminanceEnabled: boolean` + `setLuminanceEnabled`. `TIMING.FIRST_PAINT_GLOW_MS` + `TIMING.FIRST_PAINT_PULSE_MS` added to `lib/editor/templates.ts`.
+- EditorLayout additions: `exportOpen` state, `firstPaintActive` state, `firstPaintFiredRef`, `firstPaintTimersRef`, `cancelFirstPaint`, `useFirstPaint` effect, L hotkey branch in the keydown listener. `data-first-paint` attribute on root.
+
+**Conventions established:**
+
+- Dialog focus-trap pattern: `TemplateBottomSheet` + `ExportDialog` are the two canonical examples.
+- Shared uniform objects for runtime GPU toggles (no `customProgramCacheKey` unless per-material variance is required).
+- User-gesture-preserving download: `canvas.toBlob` callback form → `URL.createObjectURL` + `<a download>` click inside the callback.
+- Progressive enhancement order: native picker first, anchor-click fallback. `AbortError` swallowed, not fallback-triggered.
+- First-paint = cold editor-land with no template; template-to-edit = post-template-apply. Both share M7's TIMING vocabulary.
+
+**Bundle baseline update:**
+
+- `/editor`: 373 → **375 kB** First Load JS (+2, vs +10 kB plan budget).
+- `/` (landing): **3.45 kB / 106 kB** — unchanged (typography-only expansion).
+- Route chunks unchanged for `/`; `/editor` route 271 → 273 kB.
+
+**Test baseline:**
+
+- 493 → **549** tests (+56). Per-unit additions: Unit 1 +15 (export), Units 2+3 +13 (export dialog + guardrail), Unit 4 +9 (grayscale shader), Unit 6 +7 (luminance toggle), Units 7+8 +7 (first-paint), Unit 9 +5 (landing page).
+
+**Audit baseline:**
+
+- **0 vulnerabilities**. Zero new dependencies.
+
+**Lighthouse:**
+
+- Manual QA item in Unit 10 acceptance checklist. Landing page is ○ (Static), typography-only, no client JS beyond next/link internals, `prefetch={false}` on CTA. Realistic target ≥95 on both mobile and desktop; actual score recorded at PR time.
+
+### Recommended reading for M9
+
+- This file's M8 §Invariants — the shared-uniform pattern is directly reusable for any future GPU-state toggle (e.g., highlight-pickable-regions in Phase 2 multiplayer, color-edit-preview in M9 color adjustments).
+- `lib/editor/export.ts` — if a server-side OG image pipeline emerges (Phase 2), this is the shape to replicate server-side with a Node canvas library. The composite code is library-agnostic.
+- `app/editor/_components/ExportDialog.tsx` + `TemplateBottomSheet.tsx` — the third ARIA dialog (M9?) should extract a shared focus-trap hook; two copies is fine, three is friction.
+- `docs/plans/m8-export-polish-plan.md` D15 — the DESIGN §10 shader-token correction is a standing precedent: any doc snippet copy-pasted from DESIGN must be verified against the current dependency version.

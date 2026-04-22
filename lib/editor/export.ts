@@ -94,10 +94,7 @@ export async function exportLayersToBlob(
  * are rejected by most file pickers.
  */
 export function sanitizeFilename(name: string): string {
-  return name
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1f]/g, '')
-    .replace(/[:\\/]/g, '-');
+  return name.replace(/[\x00-\x1f]/g, '').replace(/[:\\/]/g, '-');
 }
 
 /**
