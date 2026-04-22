@@ -101,7 +101,7 @@ describe('dispatch.strokeStart — pencil', () => {
 });
 
 describe('dispatch.strokeStart — eraser', () => {
-  it('zeros the pixel at (x, y)', () => {
+  it('paints opaque white at (x, y)', () => {
     const layer = makeLayer();
     // pre-paint so we can observe the erase
     layer.pixels[(10 * W + 10) * 4] = 255;
@@ -109,7 +109,7 @@ describe('dispatch.strokeStart — eraser', () => {
     const { ctx } = makeCtx({ tool: 'eraser', layer });
     const changed = strokeStart(ctx, 10, 10);
     expect(changed).toBe(true);
-    expect(rgba(layer.pixels, 10, 10)).toEqual([0, 0, 0, 0]);
+    expect(rgba(layer.pixels, 10, 10)).toEqual([255, 255, 255, 255]);
   });
 
   it('mirrors eraser when mirrorEnabled', () => {
@@ -123,8 +123,8 @@ describe('dispatch.strokeStart — eraser', () => {
     layer.pixels[(m.y * W + m.x) * 4 + 3] = 255;
     const { ctx } = makeCtx({ tool: 'eraser', mirrorEnabled: true, layer });
     strokeStart(ctx, x, y);
-    expect(rgba(layer.pixels, x, y)).toEqual([0, 0, 0, 0]);
-    expect(rgba(layer.pixels, m.x, m.y)).toEqual([0, 0, 0, 0]);
+    expect(rgba(layer.pixels, x, y)).toEqual([255, 255, 255, 255]);
+    expect(rgba(layer.pixels, m.x, m.y)).toEqual([255, 255, 255, 255]);
   });
 });
 
@@ -304,7 +304,7 @@ describe('dispatch.strokeEnd — recorder emits Stroke records (M6 Unit 4)', () 
     expect(commitSpy).not.toHaveBeenCalled();
   });
 
-  it('eraser horizontal drag: patch after-alpha is 0 across the full bbox', () => {
+  it('eraser horizontal drag: patch after is opaque white across the full bbox', () => {
     const { ctx, layer } = makeCtx({ tool: 'eraser' });
     // pre-paint a 1×6 horizontal red strip so erase-line covers every bbox pixel
     for (let dx = 0; dx < 6; dx++) {
@@ -318,10 +318,12 @@ describe('dispatch.strokeEnd — recorder emits Stroke records (M6 Unit 4)', () 
     expect(stroke.tool).toBe('eraser');
     const patch = stroke.patches[0];
     expect(patch.bbox.h).toBe(1);
-    // After-alpha is 0 for every byte slot in the slice (horizontal line; every
-    // pixel in bbox was touched).
-    for (let i = 3; i < patch.after.length; i += 4) {
-      expect(patch.after[i]).toBe(0);
+    // After: every pixel in the bbox is opaque white (255,255,255,255).
+    for (let i = 0; i < patch.after.length; i += 4) {
+      expect(patch.after[i]).toBe(255);
+      expect(patch.after[i + 1]).toBe(255);
+      expect(patch.after[i + 2]).toBe(255);
+      expect(patch.after[i + 3]).toBe(255);
     }
     // Before-alpha was 255 (fully opaque red).
     for (let i = 3; i < patch.before.length; i += 4) {

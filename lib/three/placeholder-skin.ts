@@ -1,18 +1,15 @@
 /**
- * M2: programmatic placeholder skin generator.
- * Returns a 64x64 RGBA data URL with distinct hues per body-part region so the
- * Classic↔Slim variant toggle produces a visibly different render.
- *
- * Palette is intentionally high-contrast for debug visibility, not aesthetic —
- * M2 visual review noted the purple-arm / blue-body pairing reads as "mushy"
- * against the OLED-dark background.
+ * Programmatic placeholder skin generator.
+ * Returns a 64x64 RGBA data URL filled with opaque white across every
+ * body-part atlas region, and fully transparent elsewhere. White matches
+ * the eraser's output so "erase" reads as "return to the default skin".
  *
  * M7 note: the `blank-better` template (adapted from Microsoft's
  * minecraft-samples) is the production first-open recommendation via the
  * Ghost Templates picker. This placeholder is kept as the fresh-install
  * seed (displayed before the user picks a template, or after a variant
- * toggle clears layers) and as the dev-time Classic↔Slim variant demo
- * source. Do not remove — use-texture-manager's Effect B still calls it.
+ * toggle clears layers). Do not remove — use-texture-manager's Effect B
+ * still calls it.
  */
 
 import { SKIN_ATLAS_SIZE } from './constants';
@@ -20,14 +17,10 @@ import { type PlayerPart, type SkinVariant } from './geometry';
 
 type Rect = { x: number; y: number; w: number; h: number };
 
-// Hue palette chosen for high mutual contrast on OLED-dark (#0A0A0A) background.
-const COLORS = {
-  head: '#8B5A3C', // tan
-  body: '#3366CC', // blue
-  arm: '#663399', // purple
-  leg: '#2E8B57', // green
-  overlay: 'rgba(0, 229, 255, 0.35)', // accent-tinted, semi-transparent so base reads through
-} as const;
+const BASE_COLOR = '#FFFFFF';
+// Overlay regions stay transparent by default so the base white reads through
+// without the accent tint that shipped during M2 dev.
+const OVERLAY_COLOR = 'rgba(0, 0, 0, 0)';
 
 /**
  * Top-half rects (y < 32) used by both Classic and Slim unchanged.
@@ -65,11 +58,7 @@ function fillRect(ctx: CanvasRenderingContext2D, rect: Rect, color: string): voi
 }
 
 function partColor(part: PlayerPart): string {
-  if (part.startsWith('head')) return part.endsWith('Overlay') ? COLORS.overlay : COLORS.head;
-  if (part.startsWith('body')) return part.endsWith('Overlay') ? COLORS.overlay : COLORS.body;
-  if (part.includes('Arm')) return part.endsWith('Overlay') ? COLORS.overlay : COLORS.arm;
-  if (part.includes('Leg')) return part.endsWith('Overlay') ? COLORS.overlay : COLORS.leg;
-  return '#FF00FF'; // magenta = bug marker (unreachable given PlayerPart exhaustiveness)
+  return part.endsWith('Overlay') ? OVERLAY_COLOR : BASE_COLOR;
 }
 
 /**

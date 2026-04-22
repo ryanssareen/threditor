@@ -110,6 +110,24 @@ export class UndoStack {
   private commands: Command[] = [];
   private cursor = -1;
   private bytes = 0;
+  private listeners = new Set<() => void>();
+
+  /**
+   * Subscribe to stack mutations (push/undo/redo/clear). Returns an
+   * unsubscribe function. Listeners fire synchronously after the state
+   * change — useful for React components that want to rerender when
+   * canUndo/canRedo flips.
+   */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notify(): void {
+    for (const fn of this.listeners) fn();
+  }
 
   push(cmd: Command): void {
     // Truncate redo tail.
@@ -133,6 +151,7 @@ export class UndoStack {
       this.bytes -= sizeOfCommand(evicted);
       this.cursor -= 1;
     }
+    this.notify();
   }
 
   canUndo(): boolean {
@@ -150,6 +169,7 @@ export class UndoStack {
     applyCommand(actions, cmd, 'before');
     this.cursor -= 1;
     actions.recomposite();
+    this.notify();
     return true;
   }
 
@@ -160,6 +180,7 @@ export class UndoStack {
     const cmd = this.commands[this.cursor];
     applyCommand(actions, cmd, 'after');
     actions.recomposite();
+    this.notify();
     return true;
   }
 
@@ -180,6 +201,7 @@ export class UndoStack {
     this.commands = [];
     this.cursor = -1;
     this.bytes = 0;
+    this.notify();
   }
 }
 
