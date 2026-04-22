@@ -45,3 +45,23 @@ html {
   animation: template-affordance-pulse 600ms ease-out;
   border-radius: 0.25rem;
 }
+
+/* M8 Unit 6: luminance pill slide-down. 500ms ease-out per DESIGN §10. */
+@keyframes luminance-pill-slide-in {
+  0%   { opacity: 0; transform: translate(-50%, -1rem); }
+  100% { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* M8 Unit 7: first-paint affordance glow. Applied to tool buttons via
+ * `[data-first-paint="true"] [data-pulse-target]` — the pulse lasts
+ * 600ms then cleans itself up when the attribute is removed. */
+@keyframes first-paint-cursor-glow {
+  0%   { box-shadow: 0 0 0 0 var(--color-accent); }
+  40%  { box-shadow: 0 0 0 8px color-mix(in srgb, var(--color-accent) 35%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+[data-first-paint="true"] [data-pulse-target="brush"] {
+  animation: first-paint-cursor-glow 600ms ease-out;
+  border-radius: 0.25rem;
+}

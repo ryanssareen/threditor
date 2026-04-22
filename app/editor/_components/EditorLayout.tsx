@@ -24,6 +24,7 @@ import { AffordancePulse } from './AffordancePulse';
 import { ContextualHintOverlay } from './ContextualHintOverlay';
 import { EditorCanvas } from './EditorCanvas';
 import { ExportDialog } from './ExportDialog';
+import { LuminanceToggle } from './LuminanceToggle';
 import type { LayerLifecycleCommand } from './LayerPanel';
 import { Sidebar } from './Sidebar';
 import { TemplateGate } from './TemplateGate';
@@ -347,6 +348,18 @@ export function EditorLayout() {
         if (target.getAttribute('role') === 'application') return;
       }
 
+      // M8 Unit 6: L (no modifiers) toggles luminance. Same focus-guard
+      // conventions as the undo shortcut. Checked before the Cmd/Z
+      // branch because L is a plain-key shortcut.
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        if (e.key.toLowerCase() === 'l') {
+          e.preventDefault();
+          const store = useEditorStore.getState();
+          store.setLuminanceEnabled(!store.luminanceEnabled);
+          return;
+        }
+      }
+
       // Modifier guard: Meta XOR Ctrl must be held; Alt blocks.
       const hasCmd = e.metaKey || e.ctrlKey;
       if (!hasCmd) return;
@@ -390,6 +403,8 @@ export function EditorLayout() {
           texFadeKey={texFadeKey}
           yRotationPulseKey={yRotationPulseKey}
         />
+        {/* M8 Unit 6: luminance mode pill */}
+        <LuminanceToggle />
         {/* M7 Unit 7: contextual hint bubble */}
         <ContextualHintOverlay />
         {/* M7 Unit 7: headless affordance pulse coordinator */}

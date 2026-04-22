@@ -91,6 +91,7 @@ export function ViewportUV({
   const mirrorEnabled = useEditorStore((s) => s.mirrorEnabled);
   const variant = useEditorStore((s) => s.variant);
   const layers = useEditorStore((s) => s.layers);
+  const luminanceEnabled = useEditorStore((s) => s.luminanceEnabled);
 
   const altHeldRef = useAltHeld();
 
@@ -523,7 +524,12 @@ export function ViewportUV({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       onPointerLeave={handlePointerLeave}
-      style={{ cursor, touchAction: 'none' }}
+      style={{
+        cursor,
+        touchAction: 'none',
+        filter: luminanceEnabled ? 'grayscale(100%)' : undefined,
+      }}
+      data-luminance={luminanceEnabled ? 'on' : 'off'}
       ref={frameRef}
       data-testid="viewport-uv"
     >
