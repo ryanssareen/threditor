@@ -13,8 +13,19 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Skin Editor',
-  description: 'A free, open-source 3D Minecraft skin editor for the web.',
+  title: {
+    default: 'threditor — 3D Minecraft skin editor',
+    template: '%s · threditor',
+  },
+  description:
+    'A free, open-source 3D Minecraft skin editor for the web. Paint, preview on a live 3D model, and export a Minecraft-ready PNG.',
+  openGraph: {
+    title: 'threditor — 3D Minecraft skin editor',
+    description:
+      'Paint Minecraft skins with a live 3D preview. Templates, layers, undo, and export. Free and open-source.',
+    type: 'website',
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({
