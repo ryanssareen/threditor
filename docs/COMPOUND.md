@@ -433,3 +433,84 @@
 - `lib/editor/undo.ts` — M7 templates-as-commands will add a new `Command` kind. Follow the existing union + size() + apply/revert pattern.
 - `lib/editor/tools/dispatch.ts` — the `StrokeRecorder` shape is the model for any future multi-step atomic operations (paste, template apply, clipboard ops).
 - `docs/plans/m6-layers-undo-plan.md` D2 rationale — canonical for any future "multi-region atomic command" where a spanning bbox would waste memory.
+
+## M7: Templates + Ghost Picker — 2026-04-21
+
+### What worked
+
+- **Unit 0 as a decoupling refactor, not a "first real unit."** M6's variant-toggle gotcha (undo stack silently misaligned after Classic↔Slim) was fixed in Unit 0 by splitting `use-texture-manager` into Effect A (TM lifecycle, `[variant]`) and Effect B (placeholder seed, `[bundle, layers.length, variant]`). The payoff landed two units later — Unit 4's `applyTemplateState` could flip variant + layers atomically without the TM re-seeding over the just-applied template. Pattern: when a milestone's first act is "this M-1 gotcha becomes load-bearing," formalize the fix as Unit 0 before anything that depends on the fixed invariant.
+- **`cancelActiveTransition()` as a named chokepoint.** Four timer handles (hint-on, pulse-on, pulse-off, hint-off) are scheduled at +700/+1000/+1600/+3700 ms after template apply. Three different call sites need to cancel them: a new apply while a prior is mid-transition (Unit 4), an undo/redo of an apply-template command (Unit 4 + EditorActions adapter), and component teardown (Unit 7). Naming the bundle `cancelActiveTransition()` and calling it from all three sites kept the timer model legible. Pattern: any feature with 3+ scheduled timers that multiple event paths can pre-empt should name the cancellation surface rather than inlining `clearTimeout` at each site.
+- **M7 TIMING exported as a single `as const` object.** `templates.ts` ships `TIMING = { CHIP_DELAY_MS: 3500, HINT_DELAY_MS: 700, HINT_DURATION_MS: 3000, PULSE_DELAY_MS: 1000, PULSE_DURATION_MS: 600, CROSSFADE_MS: 200 } as const`. Every timed UI affordance in M7 — and now the M8 first-paint hook — reads from this table. Touching one value is a single-file change; a future "slow down for screenshots" knob is a single const override. Pattern: when 3+ UI affordances share timing vocabulary, a single frozen table beats scattered literals.
+- **Apply-template guardrails are layered.** The orchestrator rejects with typed reasons for: `stroke-active` (don't interrupt a drag), `hydrating` (don't fire before IDB settles), `bad-pixel-length` (defense in depth; decoder error + manifest mismatch guard), `same-template-no-force` (explicit user reapply is fine; auto-reapply is a bug). Four early returns with named reasons made the integration tests trivially deterministic.
+- **Hand-rolled ARIA dialog + focus trap, no `@radix-ui` dependency.** The bottom-sheet is ~80 LOC of dialog role + focus trap + Escape handler + backdrop click. Zero bundle cost vs. `@radix-ui/react-dialog` at ~8 KB. Adopted directly into M8's ExportDialog.
+- **PNG fixture generator in pure Node.** `scripts/gen-template-placeholders.mjs` encodes 64×64 RGBA PNGs via CRC32 + zlib deflate with no deps, runs in ~50ms, fits in 120 LOC. M8 can borrow the same encoder if browser-emitted PNGs fail in-game (unlikely but cheap insurance).
+- **TemplateGate state machine extracted to a pure reducer.** `lib/editor/template-gate-state.ts` is 10 events + 4 states + priorState for menu-initiated sheet opens. 36 reducer tests ran against the pure function before any React wiring. The `useTemplateGate(hydrationPending)` hook is ~30 LOC wrapping the reducer + dismiss persistence. Tests matter more than the React-wrapping.
+- **Placeholder fixtures ship as checkerboards in `public/templates/`.** Real art blocked but we could still validate the entire pipeline (manifest fetch, decode, apply, transition, persistence). M8's landing page should follow suit: no art blocker = no milestone delay.
+
+### What didn't
+
+- **"WebP thumbnails" in the initial plan.** Node stdlib has no WebP encoder. Shipped PNG thumbnails instead; manifest entries now end in `.png` for `thumbnail` URLs. The +overhead is ~5 KB total for 11 thumbnails. Flagged as an M8-or-later swap target if repo size starts mattering, but it probably never will.
+- **jsdom + TextureManager integration tests required getContext + ImageData stubs.** Three tests needed `vi.stubGlobal('ImageData', ...)` and a `HTMLCanvasElement.prototype.getContext` mock that returned fillRect / putImageData / getImageData shims. Not a huge amount of code but a repeat cost every time a test file touches the TM. M8 export tests will reuse the same stubs.
+- **The `@vitest-environment jsdom` directive must be at the very first line of a test file.** Below the import block silently fails — tests see Node globals and throw `document is not defined` at the first DOM touch. Pinned for M8.
+
+### Invariants discovered
+
+- **Timer handles that can be pre-empted from three+ sites deserve a named cancel surface.** `cancelActiveTransition()` now owns the four M7 transition timers. M8's first-paint hook will own a parallel set (cursor glow + contextual hint + pulse + Y-rotation pulse) that must cancel on first stroke. Copy the pattern.
+- **`applyTemplateState` is an atomic whole-document store write that BYPASSES `setVariant`'s layer-clear.** A template-apply variant flip is semantically different from a user-initiated variant flip. Don't converge them — the former preserves the just-applied template; the latter correctly clobbers. Two separate paths in `store.ts`.
+- **EditorLayout owns the undo-stack subscription AND the gate reducer hoist.** `useTemplateGate(hydrationPending)` is called once at the EditorLayout layer so both the overlay (TemplateGate) and the Sidebar TemplateMenuButton dispatch into the same state machine. Child components receive `{state, dispatch}` as props. Pattern: hoist any reducer whose events come from multiple non-sibling components to the nearest common ancestor.
+- **`markEdited` is idempotent and routes through the existing dispatcher onStrokeCommit.** Flipping `hasEditedSinceTemplate: false → true` at the store level — not per-tool — means every future tool (and every past tool) benefits for free. The M6 dispatcher-chokepoint pattern extended again.
+- **Hydration-pending gates ALL paint interaction AND all conditional transition triggers.** TemplateGate reads `hydrationPending` to avoid flashing the chip before IDB settles; ApplyTemplate rejects with `reason:'hydrating'` if called too early. M8's first-paint hook must gate the same way.
+
+### Gotchas for future milestones
+
+- **Undo's apply-template command deep-clones layer pixel buffers via `l.pixels.slice()` when capturing `before`.** Without the slice, the undo record shares the live pixel buffer and the next stamp mutates history. The M6 `.slice()` invariant from stroke commands applies just as hard here. Review before any future "whole-layer snapshot" command kind.
+- **`template-gate-storage.ts` writes a single boolean to localStorage.** It's fail-soft (try/catch on both read and write) so Private Browsing doesn't break the gate. Don't grow this into a general user-prefs store without reconsidering quota; use IDB for anything larger.
+- **DESIGN §10's shader snippet used the pre-r152 token `output_fragment`.** Fixed in M8 Unit 0. If any future doc snippet is copy-pasted from DESIGN, verify the three.js version at the time of writing.
+- **Variant toggle clears the undo stack — still, per M6's gotcha — but applyTemplate preserves it.** The two paths converge correctly by Unit 4's design (variant flip via setVariant; template flip via applyTemplateState). A future "import JSON skin" command kind should follow applyTemplateState's shape, not setVariant's.
+- **Idb persistence of `hasEditedSinceTemplate` defaults to `true` for M3–M6 records** in `loadDocument`. This is intentional — returning users with pre-M7 saves must NOT be re-prompted by the Ghost picker. If a future milestone adds a "starter template" onboarding for returning users, it must check IDB state on load, not rely on the flag alone.
+
+### Pinned facts for next milestones
+
+**Exact version deltas from M6:** none. Zero new dependencies across M7 (pure-Node PNG encoder, hand-rolled dialog, no `@radix-ui/react-dialog`). All M6 pins unchanged.
+
+**File paths established:**
+
+- `lib/editor/apply-template.ts` — `applyTemplate(actions, pushCommand, template, pixels, options)` orchestrator + `cancelActiveTransition()` + `ApplyTemplateActions` adapter type.
+- `lib/editor/templates.ts` — `TIMING` const + `loadManifest()` + `decodeTemplatePng(url)` + `clearDecodeCache()` + `isValidTemplate` + `normalizeTemplate`.
+- `lib/editor/template-gate-state.ts` — pure reducer (GateState ×4, GateEvent ×10).
+- `lib/editor/template-gate-storage.ts` — `readDismissed()` / `writeDismissed()` localStorage wrapper.
+- `lib/editor/types.ts` — `TemplateMeta`, `TemplateCategory`, `TemplateManifest`, `ApplyTemplateSnapshot`, `AffordancePulseTarget` types.
+- `lib/editor/store.ts` — adds `hasEditedSinceTemplate`, `lastAppliedTemplateId`, `activeContextualHint`, `pulseTarget` slots; `markEdited`, `setActiveContextualHint`, `clearContextualHint`, `setPulseTarget`, `applyTemplateState` actions.
+- `lib/editor/undo.ts` — Command union gets `'apply-template'` kind. `EditorActions` adapter gets `applyTemplateSnapshot`.
+- `public/templates/manifest.json` + `public/templates/{classic,slim,thumbs}/*.png` — static assets, not bundled.
+- `app/editor/_components/{TemplateGate,TemplateSuggestionChip,TemplateBottomSheet,TemplateCard,TemplateMenuButton,ContextualHintOverlay,AffordancePulse,useTemplateGate}.tsx|ts`.
+- `scripts/gen-template-placeholders.mjs` — pure-Node PNG encoder, reusable.
+
+**Conventions established:**
+
+- Timers that span 3+ cancellation call sites get a named `cancelActiveTransition()`-style surface.
+- Atomic whole-document store writes (apply-template) bypass the per-field setters that have other semantics (setVariant's layer-clear).
+- Hand-rolled ARIA dialog + focus trap is the approved pattern; no `@radix-ui` dialog dependency.
+- TIMING tables live as named const objects in the feature's pure module, not inline literals across components.
+- Gate/state reducers hoist to the nearest common ancestor (EditorLayout) and pass `{state, dispatch}` as props.
+
+**Bundle baseline update:**
+
+- `/editor`: 368 → **373 kB** First Load JS (+5, well under the +15 kB plan budget). Confirmed on `m7-templates` branch build after the white-skin/undo-button follow-up merged.
+- `/` (landing): 3.45 kB / 106 kB (unchanged).
+
+**Test baseline:**
+
+- 349 → **493** tests (+144). Plus a follow-up +4 for UndoRedoControls; plus +2 for UndoStack.subscribe. All 493 pass on `main` post-merge.
+
+**Audit baseline:**
+
+- **0 vulnerabilities**. Zero new dependencies.
+
+### Recommended reading for M8
+
+- This file's M7 §Invariants — the `cancelActiveTransition()` pattern, `applyTemplateState`-vs-`setVariant` split, and idempotent `markEdited` are directly reused by M8's export guardrail (reads `hasEditedSinceTemplate`) and first-paint hook (cancels on first stroke).
+- `lib/editor/apply-template.ts` — the orchestrator shape is the template for M8's `exportLayersToBlob` orchestrator, though M8's is simpler (one-shot, no timers).
+- `app/editor/_components/TemplateBottomSheet.tsx` — copy this ARIA/focus-trap shape for `ExportDialog`.
+- `lib/editor/templates.ts` TIMING table — extend it with M8's first-paint milestones if they need persistence; otherwise the hook-local constants are fine.
+- `docs/plans/m8-export-polish-plan.md` D15 — the three.js `opaque_fragment` correction DESIGN §10 has now shipped.
