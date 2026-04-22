@@ -75,6 +75,13 @@ export function EditorLayout() {
   const [texFadeKey, setTexFadeKey] = useState(0);
   const [yRotationPulseKey, setYRotationPulseKey] = useState(0);
 
+  // Undo/redo button reactivity: bump a version counter when the stack
+  // mutates so canUndo/canRedo checks re-run during render.
+  const [, setUndoVersion] = useState(0);
+  useEffect(() => {
+    return undoStack.subscribe(() => setUndoVersion((v) => v + 1));
+  }, [undoStack]);
+
   // Hydrate from IndexedDB then install persistence.
   useEffect(() => {
     if (bundle === null) return;
@@ -299,6 +306,16 @@ export function EditorLayout() {
     [undoStack, hydrationPending],
   );
 
+  const handleUndo = useCallback(() => {
+    if (useEditorStore.getState().strokeActive) return;
+    undoStack.undo(buildActions());
+  }, [undoStack, buildActions]);
+
+  const handleRedo = useCallback(() => {
+    if (useEditorStore.getState().strokeActive) return;
+    undoStack.redo(buildActions());
+  }, [undoStack, buildActions]);
+
   // M7 Unit 0: user-initiated variant toggle clears the undo stack.
   // User variant changes are NOT undoable per D5 — replaying stroke
   // commands across a variant switch is semantically ambiguous and
@@ -407,6 +424,10 @@ export function EditorLayout() {
           onOpenTemplateMenu={() =>
             gate.dispatch({ type: 'SHEET_OPENED_FROM_MENU' })
           }
+          canUndo={undoStack.canUndo()}
+          canRedo={undoStack.canRedo()}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
         />
       </aside>
     </div>

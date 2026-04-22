@@ -1,6 +1,7 @@
 // @vitest-environment node
 //
-// M5 Unit 2 — eraser stamp + Bresenham eraseLine.
+// Eraser stamp + Bresenham eraseLine. Writes opaque white per the
+// default-white skin convention.
 
 import { describe, expect, it } from 'vitest';
 
@@ -13,49 +14,54 @@ const HEIGHT = 64;
 const makePixels = (): Uint8ClampedArray => new Uint8ClampedArray(WIDTH * HEIGHT * 4);
 const pixelOffset = (x: number, y: number): number => (y * WIDTH + x) * 4;
 
-const isTransparent = (pixels: Uint8ClampedArray, x: number, y: number): boolean => {
+const isWhite = (pixels: Uint8ClampedArray, x: number, y: number): boolean => {
   const o = pixelOffset(x, y);
-  return pixels[o] === 0 && pixels[o + 1] === 0 && pixels[o + 2] === 0 && pixels[o + 3] === 0;
+  return (
+    pixels[o] === 255 &&
+    pixels[o + 1] === 255 &&
+    pixels[o + 2] === 255 &&
+    pixels[o + 3] === 255
+  );
 };
 
 describe('stampEraser', () => {
-  it('size=1 zeros a single pixel', () => {
+  it('size=1 paints a single white pixel', () => {
     const pixels = makePixels();
     stampPencil(pixels, 10, 10, 1, 255, 128, 0, 200);
     stampEraser(pixels, 10, 10, 1);
-    expect(isTransparent(pixels, 10, 10)).toBe(true);
+    expect(isWhite(pixels, 10, 10)).toBe(true);
   });
 
-  it('size=2 zeros a 2x2 block at (cx-1, cy-1)', () => {
+  it('size=2 paints a 2x2 white block at (cx-1, cy-1)', () => {
     const pixels = makePixels();
     for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
       stampPencil(pixels, x, y, 1, 255, 0, 0, 255);
     }
     stampEraser(pixels, 2, 2, 2);
     for (let y = 1; y <= 2; y++) for (let x = 1; x <= 2; x++) {
-      expect(isTransparent(pixels, x, y)).toBe(true);
+      expect(isWhite(pixels, x, y)).toBe(true);
     }
     // outside: still painted red
-    expect(isTransparent(pixels, 0, 0)).toBe(false);
-    expect(isTransparent(pixels, 3, 3)).toBe(false);
+    expect(isWhite(pixels, 0, 0)).toBe(false);
+    expect(isWhite(pixels, 3, 3)).toBe(false);
   });
 
-  it('size=3 zeros 3x3 centered', () => {
+  it('size=3 paints white 3x3 centered', () => {
     const pixels = makePixels();
     for (let y = 0; y < 5; y++) for (let x = 0; x < 5; x++) {
       stampPencil(pixels, x, y, 1, 10, 20, 30, 255);
     }
     stampEraser(pixels, 2, 2, 3);
     for (let y = 1; y <= 3; y++) for (let x = 1; x <= 3; x++) {
-      expect(isTransparent(pixels, x, y)).toBe(true);
+      expect(isWhite(pixels, x, y)).toBe(true);
     }
   });
 
   it('clips at atlas right/bottom edges (no OOB writes)', () => {
     const pixels = makePixels();
-    stampPencil(pixels, 63, 63, 1, 255, 255, 255, 255);
+    stampPencil(pixels, 63, 63, 1, 10, 20, 30, 40);
     stampEraser(pixels, 63, 63, 4);
-    expect(isTransparent(pixels, 63, 63)).toBe(true);
+    expect(isWhite(pixels, 63, 63)).toBe(true);
     // No throw + buffer length unchanged:
     expect(pixels.length).toBe(WIDTH * HEIGHT * 4);
   });
@@ -69,12 +75,12 @@ describe('stampEraser', () => {
     expect(pixels[o + 3]).toBe(4);
   });
 
-  it('integration: pencil then eraser at same coord yields transparent', () => {
+  it('integration: pencil then eraser at same coord yields white', () => {
     const pixels = makePixels();
     stampPencil(pixels, 20, 20, 2, 255, 0, 0, 255);
     stampEraser(pixels, 20, 20, 2);
     for (let y = 19; y <= 20; y++) for (let x = 19; x <= 20; x++) {
-      expect(isTransparent(pixels, x, y)).toBe(true);
+      expect(isWhite(pixels, x, y)).toBe(true);
     }
   });
 
@@ -87,12 +93,12 @@ describe('stampEraser', () => {
 });
 
 describe('eraseLine', () => {
-  it('(0,0) to (4,4) with size 1 zeros 5 pixels on the diagonal', () => {
+  it('(0,0) to (4,4) with size 1 paints white along the diagonal', () => {
     const pixels = makePixels();
     for (let i = 0; i < 5; i++) stampPencil(pixels, i, i, 1, 200, 100, 50, 255);
     eraseLine(pixels, 0, 0, 4, 4, 1);
     for (let i = 0; i < 5; i++) {
-      expect(isTransparent(pixels, i, i)).toBe(true);
+      expect(isWhite(pixels, i, i)).toBe(true);
     }
   });
 

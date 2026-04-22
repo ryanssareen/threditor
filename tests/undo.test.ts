@@ -359,6 +359,58 @@ describe('UndoStack — clear()', () => {
   });
 });
 
+describe('UndoStack — subscribe()', () => {
+  it('notifies listeners on push, undo, redo, and clear', () => {
+    const base = mkLayer('base');
+    const { actions } = makeActions([base]);
+    const stack = new UndoStack();
+    let notified = 0;
+    const unsubscribe = stack.subscribe(() => {
+      notified += 1;
+    });
+
+    stack.push(mkStrokeCmd('base', { x: 0, y: 0, w: 1, h: 1 }, 0, 5));
+    expect(notified).toBe(1);
+
+    stack.push(mkStrokeCmd('base', { x: 0, y: 0, w: 1, h: 1 }, 5, 9));
+    expect(notified).toBe(2);
+
+    stack.undo(actions);
+    expect(notified).toBe(3);
+
+    stack.redo(actions);
+    expect(notified).toBe(4);
+
+    stack.clear();
+    expect(notified).toBe(5);
+
+    unsubscribe();
+    stack.push(mkStrokeCmd('base', { x: 0, y: 0, w: 1, h: 1 }, 0, 1));
+    expect(notified).toBe(5);
+  });
+
+  it('undo that is blocked by strokeActive does not notify', () => {
+    const base = mkLayer('base');
+    let active = true;
+    const { actions } = makeActions([base], { strokeActive: () => active });
+    const stack = new UndoStack();
+    stack.push(mkStrokeCmd('base', { x: 0, y: 0, w: 1, h: 1 }, 0, 7));
+
+    let notified = 0;
+    stack.subscribe(() => {
+      notified += 1;
+    });
+
+    const result = stack.undo(actions);
+    expect(result).toBe(false);
+    expect(notified).toBe(0);
+
+    active = false;
+    stack.undo(actions);
+    expect(notified).toBe(1);
+  });
+});
+
 describe('UndoStack — involution invariant', () => {
   it('sequence [push, push, push, undo, undo, redo, push] ends correctly', () => {
     const base = mkLayer('base');

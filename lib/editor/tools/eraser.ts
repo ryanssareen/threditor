@@ -1,21 +1,18 @@
 /**
  * lib/editor/tools/eraser.ts
  *
- * M5: eraser stamp + Bresenham eraseLine. Writes fully transparent RGBA
- * (0, 0, 0, 0) at each pixel. Same top-left centering convention,
- * clipping rules, and zero-allocation hot-path discipline as pencil.ts.
- *
- * Pencil and eraser could share a "stamp with these 4 bytes" helper, but
- * three lines of clip math inlined into each file is cheaper than a
- * shared abstraction that adds a function-call frame to the pointermove
- * hot path.
+ * Eraser stamp + Bresenham eraseLine. Writes opaque white RGBA
+ * (255, 255, 255, 255) at each pixel — matches the default-white
+ * placeholder so "erase" reads as "reveal the default skin". Same
+ * top-left centering convention, clipping rules, and zero-allocation
+ * hot-path discipline as pencil.ts.
  */
 
 import { SKIN_ATLAS_SIZE } from '../../three/constants';
 
 /**
- * Zero an NxN region centered on atlas (cx, cy). Centering convention
- * matches pencil.ts:
+ * Paint an NxN region of opaque white centered on atlas (cx, cy).
+ * Centering convention matches pencil.ts:
  *   size=1 → halfLeft=0  (top-left = cx+0)
  *   size=2 → halfLeft=1  (top-left = cx-1)
  *   size=3 → halfLeft=1  (top-left = cx-1)
@@ -44,10 +41,10 @@ export function stampEraser(
   for (let py = y0; py < y1; py++) {
     for (let px = x0; px < x1; px++) {
       const i = (py * SKIN_ATLAS_SIZE + px) * 4;
-      pixels[i]     = 0;
-      pixels[i + 1] = 0;
-      pixels[i + 2] = 0;
-      pixels[i + 3] = 0;
+      pixels[i]     = 255;
+      pixels[i + 1] = 255;
+      pixels[i + 2] = 255;
+      pixels[i + 3] = 255;
     }
   }
 
