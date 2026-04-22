@@ -17,6 +17,7 @@ import {
 } from '@/lib/editor/apply-template';
 import { initPersistence, loadDocument } from '@/lib/editor/persistence';
 import { useEditorStore } from '@/lib/editor/store';
+import { TIMING } from '@/lib/editor/templates';
 import { UndoStack, writeLayerRegion, type EditorActions } from '@/lib/editor/undo';
 import { useTextureManagerBundle } from '@/lib/editor/use-texture-manager';
 import type { Layer, Stroke, TemplateMeta } from '@/lib/editor/types';
@@ -79,6 +80,46 @@ export function EditorLayout() {
 
   // M8 Unit 2: export dialog open state.
   const [exportOpen, setExportOpen] = useState(false);
+
+  // M8 Unit 7/8: first-paint sequence.
+  //
+  // Fires once per session when (a) hydration completed and (b) no
+  // template has been applied (lastAppliedTemplateId === null). A
+  // returning user with a saved template skips the sequence — they
+  // know the app.
+  //
+  // Sequence:
+  //   t=0   → set data-first-paint="true" on root; CSS glow on brush radio
+  //   t=600 → clear the data attribute (glow fades naturally)
+  //   t=700 → setActiveContextualHint("Try painting — click anywhere.")
+  //   t=1000→ setPulseTarget("brush") (M7 AffordancePulse clears at +600ms)
+  //   t=1600→ if no stroke fired, bump firstPaintPulseKey for Y-rotation
+  //
+  // Cancelled on first stroke OR component unmount. Timer bundle
+  // follows the M7 `cancelActiveTransition()` pattern.
+  const [firstPaintActive, setFirstPaintActive] = useState(false);
+  const firstPaintFiredRef = useRef(false);
+  const firstPaintTimersRef = useRef<{
+    glow: ReturnType<typeof setTimeout> | null;
+    hint: ReturnType<typeof setTimeout> | null;
+    pulse: ReturnType<typeof setTimeout> | null;
+    pulseKey: ReturnType<typeof setTimeout> | null;
+  }>({ glow: null, hint: null, pulse: null, pulseKey: null });
+
+  const cancelFirstPaint = useCallback(() => {
+    const t = firstPaintTimersRef.current;
+    if (t.glow !== null) clearTimeout(t.glow);
+    if (t.hint !== null) clearTimeout(t.hint);
+    if (t.pulse !== null) clearTimeout(t.pulse);
+    if (t.pulseKey !== null) clearTimeout(t.pulseKey);
+    firstPaintTimersRef.current = {
+      glow: null,
+      hint: null,
+      pulse: null,
+      pulseKey: null,
+    };
+    setFirstPaintActive(false);
+  }, []);
 
   // Undo/redo button reactivity: bump a version counter when the stack
   // mutates so canUndo/canRedo checks re-run during render.
@@ -193,6 +234,55 @@ export function EditorLayout() {
     bundle.textureManager.composite(layers);
     markDirtyRef.current();
   }, [bundle, layers]);
+
+  // M8 Unit 7/8: first-paint trigger. Runs exactly once per session,
+  // when hydration settles with no template applied. Reload with a
+  // template restored skips the sequence (returning-user assumption).
+  useEffect(() => {
+    if (hydrationPending) return;
+    if (firstPaintFiredRef.current) return;
+    const lastApplied = useEditorStore.getState().lastAppliedTemplateId;
+    if (lastApplied !== null) return;
+    firstPaintFiredRef.current = true;
+    setFirstPaintActive(true);
+
+    const timers = firstPaintTimersRef.current;
+    timers.glow = setTimeout(() => {
+      setFirstPaintActive(false);
+    }, TIMING.FIRST_PAINT_GLOW_MS);
+    timers.hint = setTimeout(() => {
+      useEditorStore.getState().setActiveContextualHint(
+        'Try painting — click anywhere on the model.',
+      );
+    }, TIMING.HINT_DELAY_MS);
+    timers.pulse = setTimeout(() => {
+      useEditorStore.getState().setPulseTarget('brush');
+    }, TIMING.PULSE_DELAY_MS);
+    timers.pulseKey = setTimeout(() => {
+      if (useEditorStore.getState().strokeActive) return;
+      if (useEditorStore.getState().hasEditedSinceTemplate) return;
+      // Reuse yRotationPulseKey — first-paint and apply-template
+      // pulses never overlap (apply-template requires a user action
+      // after mount, by which time first-paint has completed).
+      setYRotationPulseKey((k) => k + 1);
+    }, TIMING.FIRST_PAINT_PULSE_MS);
+
+    return () => {
+      cancelFirstPaint();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrationPending]);
+
+  // First-paint cancellation on first stroke — the M7 markEdited chokepoint
+  // flips hasEditedSinceTemplate; when it flips true while the first-paint
+  // sequence is active, cancel pending timers.
+  useEffect(() => {
+    return useEditorStore.subscribe((state, prev) => {
+      if (!prev.hasEditedSinceTemplate && state.hasEditedSinceTemplate) {
+        cancelFirstPaint();
+      }
+    });
+  }, [cancelFirstPaint]);
 
   // ── Undo/redo wiring ─────────────────────────────────────────────────
 
@@ -389,7 +479,10 @@ export function EditorLayout() {
   }, [undoStack, buildActions]);
 
   return (
-    <div className="flex h-dvh w-dvw flex-col sm:flex-row">
+    <div
+      className="flex h-dvh w-dvw flex-col sm:flex-row"
+      data-first-paint={firstPaintActive ? 'true' : undefined}
+    >
       <div className="relative h-[30vh] w-full shrink-0 sm:h-full sm:w-auto sm:flex-1">
         <EditorCanvas
           texture={bundle?.textureManager.getTexture() ?? null}
