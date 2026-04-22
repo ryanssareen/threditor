@@ -191,6 +191,17 @@ export type EditorState = {
    * the variant flip.
    */
   applyTemplateState: (snapshot: ApplyTemplateSnapshot) => void;
+
+  // ── M8 luminance (color-blind mode) ────────────────────────────────
+  /**
+   * When true, the 2D UV viewport applies CSS `filter: grayscale(100%)`
+   * and the 3D PlayerModel's patched materials read `uGrayscale = true`
+   * via a shared shader uniform. Color picker, palette, and active
+   * swatch stay in color (filter is scoped to the viewport container).
+   */
+  luminanceEnabled: boolean;
+  /** Idempotent setter. Same-value calls do not re-render subscribers. */
+  setLuminanceEnabled: (next: boolean) => void;
 };
 
 const INITIAL_ACTIVE_COLOR = pickerStateFromHex(DEFAULT_PALETTE[0]) ?? {
@@ -237,6 +248,9 @@ export const useEditorStore = create<EditorState>((set) => ({
   pulseTarget: null,
 
   savingState: 'pending',
+
+  // M8 luminance default: off. Not persisted across reloads (see plan D-open).
+  luminanceEnabled: false,
 
   // M7 Unit 0: atomic variant flip + layer clear. use-texture-manager's
   // Effect A sees the new variant and disposes+rebuilds the TM; Effect B
@@ -425,4 +439,9 @@ export const useEditorStore = create<EditorState>((set) => ({
       hasEditedSinceTemplate: snapshot.hasEditedSinceTemplate,
       lastAppliedTemplateId: snapshot.lastAppliedTemplateId,
     })),
+
+  setLuminanceEnabled: (next) =>
+    set((prev) =>
+      prev.luminanceEnabled === next ? prev : { luminanceEnabled: next },
+    ),
 }));
