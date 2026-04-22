@@ -379,6 +379,8 @@ Guardrail applies only if stroke count is zero. Any edit removes the prompt.
 
 **M7 note (guardrail trigger point):** the 2000ms+ row describes when the guardrail can fire; it is not a timer that shoots a dialog into the UI unprompted. The soft-friction dialog lands in **M8** alongside the PNG export action and is wired to `useEditorStore.getState().hasEditedSinceTemplate`. M7 persists the `hasEditedSinceTemplate` + `lastAppliedTemplateId` flags so M8's export handler has the state it needs without additional plumbing.
 
+**M8 guardrail expression (canonical):** `hasEditedSinceTemplate === false && lastAppliedTemplateId !== null`. Fresh sessions with no template applied (`lastAppliedTemplateId === null`) bypass the guardrail — there is nothing to protect against. Any committed stroke flips `hasEditedSinceTemplate` to `true` via the M7 dispatcher chokepoint, which permanently clears the guardrail for that template.
+
 ---
 
 ## 6. The R3F player model
@@ -622,21 +624,30 @@ Implementation:
 
 ```ts
 // lib/editor/grayscale-shader.ts
+// NOTE: three.js r152/r154 renamed `<output_fragment>` to `<opaque_fragment>`
+// (migration guide). three 0.184 uses `<opaque_fragment>`; the older token
+// silently no-ops because `replace()` matches nothing.
+//
+// We share ONE uniform object across every patched material so toggling
+// `.value` propagates to all meshes without recompile and without needing
+// `material.customProgramCacheKey` management.
 export const grayscaleUniform = { value: false };
 
 // Patch onto material in PlayerModel:
 material.onBeforeCompile = (shader) => {
   shader.uniforms.uGrayscale = grayscaleUniform;
-  shader.fragmentShader = shader.fragmentShader.replace(
-    '#include <output_fragment>',
-    `
-    #include <output_fragment>
-    if (uGrayscale) {
-      float luma = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
-      gl_FragColor.rgb = vec3(luma);
-    }
-    `
-  );
+  shader.fragmentShader =
+    'uniform bool uGrayscale;\n' +
+    shader.fragmentShader.replace(
+      '#include <opaque_fragment>',
+      `
+      #include <opaque_fragment>
+      if (uGrayscale) {
+        float luma = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
+        gl_FragColor.rgb = vec3(luma);
+      }
+      `,
+    );
 };
 ```
 
