@@ -1,7 +1,7 @@
 ---
 title: "M8: Export + Onboarding Polish"
 type: feat
-status: active
+status: completed
 date: 2026-04-22
 ---
 
