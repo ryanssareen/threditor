@@ -7,6 +7,7 @@ import { ColorPicker } from './ColorPicker';
 import { LayerPanel, type LayerLifecycleCommand } from './LayerPanel';
 import { TemplateMenuButton } from './TemplateMenuButton';
 import { Toolbar } from './Toolbar';
+import { UndoRedoControls } from './UndoRedoControls';
 
 type SidebarProps = {
   className?: string;
@@ -21,6 +22,10 @@ type SidebarProps = {
   onUserVariantChange?: (next: SkinVariant) => void;
   /** M7 Unit 6: open the template picker via the menu path (source:'menu'). */
   onOpenTemplateMenu?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
 };
 
 export function Sidebar({
@@ -28,6 +33,10 @@ export function Sidebar({
   onLayerUndoPush,
   onUserVariantChange,
   onOpenTemplateMenu,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
 }: SidebarProps) {
   return (
     <div
@@ -37,6 +46,14 @@ export function Sidebar({
         <TemplateMenuButton onOpen={onOpenTemplateMenu} />
       )}
       <Toolbar />
+      {onUndo !== undefined && onRedo !== undefined && (
+        <UndoRedoControls
+          canUndo={canUndo ?? false}
+          canRedo={canRedo ?? false}
+          onUndo={onUndo}
+          onRedo={onRedo}
+        />
+      )}
       <VariantToggle onUserVariantChange={onUserVariantChange} />
       <BrushSizeRadio />
       <ColorPicker />
