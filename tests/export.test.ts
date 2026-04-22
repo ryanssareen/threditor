@@ -258,8 +258,10 @@ describe('exportLayersToBlob', () => {
 // ── downloadBlob ─────────────────────────────────────────────────────
 
 describe('downloadBlob', () => {
-  let createSpy: ReturnType<typeof vi.spyOn>;
-  let revokeSpy: ReturnType<typeof vi.spyOn>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let createSpy: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let revokeSpy: any;
 
   beforeEach(() => {
     createSpy = vi

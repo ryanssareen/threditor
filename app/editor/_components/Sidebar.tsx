@@ -26,6 +26,8 @@ type SidebarProps = {
   canRedo?: boolean;
   onUndo?: () => void;
   onRedo?: () => void;
+  /** M8 Unit 2: open the export dialog. */
+  onOpenExport?: () => void;
 };
 
 export function Sidebar({
@@ -37,6 +39,7 @@ export function Sidebar({
   canRedo,
   onUndo,
   onRedo,
+  onOpenExport,
 }: SidebarProps) {
   return (
     <div
@@ -58,6 +61,16 @@ export function Sidebar({
       <BrushSizeRadio />
       <ColorPicker />
       <LayerPanel onUndoPush={onLayerUndoPush} />
+      {onOpenExport !== undefined && (
+        <button
+          type="button"
+          data-testid="sidebar-export-button"
+          onClick={onOpenExport}
+          className="rounded-sm border border-accent bg-accent px-3 py-2 font-mono text-sm font-semibold text-canvas hover:bg-accent-hover"
+        >
+          Export PNG
+        </button>
+      )}
       <SavingStatusChip />
     </div>
   );
