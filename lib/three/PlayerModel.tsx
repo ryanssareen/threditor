@@ -34,7 +34,12 @@
 
 import { type ThreeEvent, useFrame } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { BoxGeometry, type Mesh, type Texture } from 'three';
+import { BoxGeometry, type Material, type Mesh, type Texture } from 'three';
+
+import {
+  grayscaleUniform,
+  patchMaterial,
+} from '@/lib/editor/grayscale-shader';
 
 import {
   BREATHING_AMPLITUDE,
@@ -172,6 +177,18 @@ export function PlayerModel({
   const setHoveredPixel = useEditorStore((s) => s.setHoveredPixel);
   const setActiveColor = useEditorStore((s) => s.setActiveColor);
   const layers = useEditorStore((s) => s.layers);
+  // M8 Unit 5: drive the shared grayscaleUniform. Effect-based, not
+  // useFrame — the zero-alloc invariant stays intact. `onUpdate` on
+  // each `<meshStandardMaterial>` ran `patchMaterial` already; this
+  // just mutates the shared value the shader reads every frame.
+  const luminanceEnabled = useEditorStore((s) => s.luminanceEnabled);
+  useEffect(() => {
+    grayscaleUniform.value = luminanceEnabled;
+    return () => {
+      // Defensive reset on unmount so a remount starts in color.
+      grayscaleUniform.value = false;
+    };
+  }, [luminanceEnabled]);
 
   const altHeldRef = useAltHeld();
 
@@ -527,6 +544,7 @@ export function PlayerModel({
               transparent={isOverlay}
               alphaTest={isOverlay ? 0.01 : 0}
               depthWrite={!isOverlay}
+              onUpdate={(m: Material) => patchMaterial(m)}
             />
           </mesh>
         );
