@@ -82,26 +82,65 @@ function readAdminConfig(): {
  * we can diagnose mis-pasted keys without leaking secrets.
  */
 export function getPrivateKeyShape(): {
-  length: number;
-  hasBeginMarker: boolean;
-  hasEndMarker: boolean;
-  hasRealNewlines: boolean;
-  hasEscapedNewlines: boolean;
-  hasSurroundingQuotes: boolean;
-  endsWithNewline: boolean;
+  rawLength: number;
+  rawHasBeginMarker: boolean;
+  rawHasEndMarker: boolean;
+  rawHasRealNewlines: boolean;
+  rawHasEscapedNewlines: boolean;
+  rawHasDoubleEscapedNewlines: boolean;
+  rawHasSurroundingQuotes: boolean;
+  rawEndsWithNewline: boolean;
+  normalizedLength: number;
+  normalizedNewlineCount: number;
+  normalizedStartsCorrectly: boolean;
+  normalizedEndsCorrectly: boolean;
+  normalizedFirstLine: string;
+  normalizedLastLine: string;
+  cryptoParseOk: boolean;
+  cryptoParseError: string;
 } {
   const raw = process.env.FIREBASE_ADMIN_PRIVATE_KEY ?? '';
   const trimmed = raw.trim();
+  const normalized = normalizePrivateKey(raw);
+
+  const lines = normalized.split('\n');
+  const firstLine = lines[0] ?? '';
+  const lastNonEmpty = [...lines].reverse().find((l) => l.length > 0) ?? '';
+
+  let cryptoParseOk = false;
+  let cryptoParseError = '';
+  try {
+    // Use dynamic require so this module still works in environments
+    // where node:crypto isn't present at import time (it always is on
+    // Vercel Node runtime, but this keeps the diagnostic defensive).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createPrivateKey } = require('node:crypto') as typeof import('node:crypto');
+    createPrivateKey({ key: normalized, format: 'pem' });
+    cryptoParseOk = true;
+  } catch (e) {
+    cryptoParseError =
+      e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+  }
+
   return {
-    length: raw.length,
-    hasBeginMarker: raw.includes('-----BEGIN PRIVATE KEY-----'),
-    hasEndMarker: raw.includes('-----END PRIVATE KEY-----'),
-    hasRealNewlines: raw.includes('\n'),
-    hasEscapedNewlines: raw.includes('\\n'),
-    hasSurroundingQuotes:
+    rawLength: raw.length,
+    rawHasBeginMarker: raw.includes('-----BEGIN PRIVATE KEY-----'),
+    rawHasEndMarker: raw.includes('-----END PRIVATE KEY-----'),
+    rawHasRealNewlines: raw.includes('\n'),
+    rawHasEscapedNewlines: raw.includes('\\n'),
+    rawHasDoubleEscapedNewlines: raw.includes('\\\\n'),
+    rawHasSurroundingQuotes:
       (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
       (trimmed.startsWith("'") && trimmed.endsWith("'")),
-    endsWithNewline: raw.endsWith('\n'),
+    rawEndsWithNewline: raw.endsWith('\n'),
+    normalizedLength: normalized.length,
+    normalizedNewlineCount: (normalized.match(/\n/g) ?? []).length,
+    normalizedStartsCorrectly: normalized.startsWith('-----BEGIN PRIVATE KEY-----\n'),
+    normalizedEndsCorrectly: normalized.trimEnd().endsWith('-----END PRIVATE KEY-----'),
+    normalizedFirstLine: firstLine.slice(0, 50),
+    normalizedLastLine: lastNonEmpty.slice(0, 50),
+    cryptoParseOk,
+    cryptoParseError,
   };
 }
 
