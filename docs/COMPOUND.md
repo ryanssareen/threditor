@@ -599,3 +599,101 @@
 - `lib/editor/export.ts` — if a server-side OG image pipeline emerges (Phase 2), this is the shape to replicate server-side with a Node canvas library. The composite code is library-agnostic.
 - `app/editor/_components/ExportDialog.tsx` + `TemplateBottomSheet.tsx` — the third ARIA dialog (M9?) should extract a shared focus-trap hook; two copies is fine, three is friction.
 - `docs/plans/m8-export-polish-plan.md` D15 — the DESIGN §10 shader-token correction is a standing precedent: any doc snippet copy-pasted from DESIGN must be verified against the current dependency version.
+
+## M9: Firebase + Supabase Scaffolding — 2026-04-23
+
+### What worked
+
+- **Plan-code sample type-verified before Unit 1 began.** The plan had `getFirestore(db)` using `db` before its initialization; Unit 1's first implementation pass caught and fixed it. This is the **second** plan-sample bug in the journal (M1's `cat .next/server/app/page.html` was the first). Pattern escalates to an invariant: plan code samples must be read critically as pseudocode, not copy-pasted. A 30-second tsc-in-head during plan review would have caught both.
+- **Research-driven Unit 0 (`server-only` barrier) added at fix-time, not ship-time.** The plan did not call out `import 'server-only'` as a requirement. The /ce:review security agent plus the learnings-researcher both surfaced the gap; adding it inside the M9 review round (rather than deferring to M10's "first real admin consumer") means M10's work starts with the compile-time boundary already in place. Pattern: when research flags a cheap compile-time guard for a soon-to-ship abstraction, add it before the first consumer, not after.
+- **Singleton + env-read-at-init-time.** `readFirebaseConfig()` / `readAdminConfig()` / `getSupabase` all read `process.env.*` inside the getter function, not at module-load. This makes `vi.stubEnv` in test beforeEach hooks work without dynamic imports or module-reset hacks. Pattern: any module that reads env must read it lazily — test-friendliness is a side-effect; the primary reason is production robustness (env changes between build and runtime, or between serverless cold start and subsequent invocations, are honored).
+- **Throwaway RSA keypair in admin tests via `node:crypto.generateKeyPairSync`.** The plan suggested a short base64 string as a stub PEM; `cert()` performs ASN.1 parse and rejected it. Generating a real 2048-bit PKCS8 keypair at test-file-import time takes ~50 ms and lets the full init path run. Pattern for any test that exercises an SDK with cryptographic validation: generate real inputs via stdlib crypto rather than stubbing strings.
+- **Reviewing dispatched 7 parallel agents; 3 of them converged on the same P1 (`server-only` barrier).** Cross-reviewer agreement was the strongest signal for severity. Routing stayed conservative per `ce:review` Stage 5 rules: disagreements push findings toward the narrower route, not wider.
+- **firestore.rules ships with the security-fix round as part of M9, not deferred to M10.** Two rules bugs (likes-delete using null `request.resource`, likes-create not enforcing the doc-id convention) would have shipped silently until M10's first real like-toggle attempt. Catching them at scaffolding time costs nothing; catching them post-M10 means a user-visible broken feature.
+
+### What didn't
+
+- **`server-only` broke vitest at first install.** The package throws in non-server-component contexts; admin tests under vitest (node env) hit it immediately. Fix: alias `server-only` → `node_modules/server-only/empty.js` in `vitest.config.ts`. The package.json `exports` field hides empty.js from normal package-path resolution (only `react-server` condition can reach it), so the alias had to point at the on-disk file directly. Pattern: any Next.js build-time guard package (`server-only`, `client-only`) needs a test-env alias to the sibling no-op shim.
+- **`StorageFileApi` is declared but not exported from @supabase/storage-js.** Attempting `import type { StorageFileApi }` fails — the symbol is module-private. Derived the type via `ReturnType<SupabaseClient['storage']['from']>` instead. Pattern: when a library's public types are thin, derive from the call signature; stays accurate across minor-version bumps.
+- **Firebase Auth validates API-key format at init.** First tests stubbed `'test-api-key'`; `getAuth()` threw `auth/invalid-api-key`. Fix: use a plausible `AIza`-prefixed 39-char string. No actual Google API call fires, so the format check is shape-only.
+- **Plan's Unit 2 used `firebase-admin/app` etc. but the package wasn't in package.json.** The user's Unit 0 instruction was "install dependencies already added to package.json"; `firebase-admin` had to be installed separately. Added with a note in the commit message. Pattern: plan author should run an `npm install --dry-run` pass before declaring "deps pre-added" — the paper-only pass misses server-side packages that look similar to client-side ones.
+- **10 moderate/low vulnerabilities in firebase-admin's transitive tree (gaxios, uuid).** Server-only scope — never bundled to client. Accepted for M9; revisit trigger: when firebase-admin ships a release with upstream fixes, OR when M11 first writes from a server action.
+
+### Invariants discovered
+
+- **`'use client'` is now permitted in `lib/` for browser-only SDK accessor modules,** extending the M2 PlayerModel exception. The directive enforces the build-time client/server boundary the same way PlayerModel's does; the broader rule is "`'use client'` in `lib/` is acceptable when the module is (a) a UI-component-shaped React file OR (b) a browser-only SDK accessor that must not be imported from server paths." Currently: `PlayerModel.tsx`, `firebase/client.ts`, `supabase/client.ts`.
+- **`import 'server-only'` is the inverse boundary guard for admin-side modules.** Any module that reads a secret (Firebase Admin private key, Supabase service-role key when that lands) should start with `import 'server-only'`. Requires the vitest alias trick documented in the "What didn't" section above.
+- **The M6 "non-serializable session instance lives in useRef, not zustand" invariant does NOT apply to React-reactive identity values.** The Firebase Auth `User` object is non-serializable BUT is tracked by React state via the AuthProvider's `useState` — consumers need to re-render on sign-in/out. The M6 invariant's stated reason is "zustand persist/devtools assume serializable," which doesn't apply to React context. Operational rule: **non-serializable SDK instances** (Auth singleton, TextureManager) live in module scope or useRef; **reactive identity values** (User, feature flags the UI reacts to) live in useState + React context; **serializable derived projections** of reactive values (userId, email) may live in zustand if needed — but the raw non-serializable object must not.
+- **Doc-ID conventions belong in the rules layer when they encode uniqueness.** DESIGN §11.4 described `${skinId}_${uid}` as a client-side convention for the likes collection; committing it only on the client meant a malicious or buggy client could bypass it. Moving the enforcement into firestore.rules (`likeId == request.resource.data.skinId + '_' + request.auth.uid`) makes the uniqueness invariant a real server-enforced constraint — a second create at the same path hits "already exists" instead of creating a sibling doc.
+- **Delete rules read `resource.data` (existing doc); create rules read `request.resource.data` (incoming).** `request.resource` is null on delete; a combined `create, delete` rule using `request.resource.data.*` always denies. Split them whenever the delete side needs to read the doc it's deleting.
+- **Plan code samples must be treated as pseudocode, not copy-paste.** Two incidents (M1 Pages-Router smoke check, M9 Unit 1 `getFirestore(db)`). Plan samples that touch external SDKs should be compiled-in-head or pasted into a scratch tsconfig before plan sign-off.
+
+### Gotchas for future milestones
+
+- **firebase-admin transitive vulns (gaxios 6.4–6.7.1 → uuid ReDoS) — server-only; accept until firebase-admin ships an upstream-fixed release.** Tracked here, not in code. If `npm audit` becomes a CI hard gate, add an `audit-exclude` config or silence per-advisory.
+- **`src/dataconnect-generated/` and `dataconnect/` are Firebase Data Connect boilerplate** (the Movies/Users example schema, NOT threditor's). Not imported anywhere in M9. They're kept only because the user committed them from an external `firebase init dataconnect` run. Do not treat them as authoritative for threditor's Firestore schema (which is in `lib/firebase/types.ts`). Candidate for removal in M10 if they stay unused.
+- **DESIGN.md §3 lists `lib/firebase/{auth.ts, firestore.ts, storage.ts}` but M9 only ships `client.ts, admin.ts, types.ts`.** The deferred files land in M10 (auth.ts — session-cookie helpers) and M11 (storage.ts — server-side Supabase upload route). `firestore.ts` may never materialize — typed wrappers will probably live inline with query callsites rather than in a monolithic wrapper module.
+- **firestore.rules ships with a design-level gap DESIGN §11.5 inherits:** skins/update locks `likeCount` AND requires owner-auth, which makes the DESIGN §11.4 client-side like transaction impossible (a liker is rarely the skin owner, and the only field changed IS likeCount). Resolution requires either (a) a Cloud Function that owns likeCount updates with the current strict rule kept, or (b) a narrow rule carve-out that permits any signed-in user to adjust likeCount by exactly ±1. Deferred to M10/M11 with the first real like-toggle implementation.
+- **firestore.rules skins/create does not validate storageUrl ownership.** An attacker with a signed-in account can create a `/skins/{skinId}` doc whose `storageUrl` points at another user's Supabase object (e.g., copying a popular skin URL) and whose `ownerUid` is their own. The gallery would then render someone else's art under the attacker's profile — content-impersonation, not account takeover. Resolution when the first real skin-publish flow lands: either gate doc creation behind a server route + Admin SDK (preferred — aligns with the already-required service-role Supabase upload path), or add a rules check that the storageUrl contains `request.auth.uid` as a path segment.
+- **Supabase RLS policies are markdown-documented, not runtime config.** Dashboard edits leave no git trace. When M11 introduces the first upload flow, commit the policies as SQL (`supabase/migrations/*.sql` + `supabase db push`) so they live alongside the code that depends on them.
+- **`firebase.json` emulators run firestore on port 8080 (Firebase default).** Common collision with Tomcat, Jenkins, Java defaults, corporate proxies. M10 should either pin a less-contested port (8088 or 9098) when wiring the emulator suite into CI, or at least pin `emulators.ui.port` + `hub.port` so the Emulator Suite's auto-port selection doesn't become a silent debugging annoyance.
+- **Missing-env-var failure mode:** `readFirebaseConfig()` / `readAdminConfig()` / `getSupabase` silently coerce missing vars to empty strings. Each SDK rejects these with its own error message — Firebase Auth throws `auth/invalid-api-key`, Admin SDK throws "Service account object must contain...", Supabase throws "supabaseUrl is required". A single fail-fast validator in each `get*()` that throws `'Missing env vars: X, Y'` before calling `initializeApp` would reduce bootstrap-time debugging. Deferred; flagged in the M9 review residuals.
+- **AuthProvider exposes the full Firebase User object** (includes email, phoneNumber, providerData — each provider carries its own UID + email). Wide PII surface. Consider narrowing to `Pick<User, 'uid' | 'displayName' | 'photoURL'>` in M10 with a separate `useFirebaseUser()` hook for callers that legitimately need `email` / `phoneNumber` (e.g., settings page).
+
+### Pinned facts for next milestones
+
+**Exact version deltas from M8:**
+
+- `firebase` `^11.2.0` (new; 14 tree-shakable modules — we import only `app` + `auth` + `firestore`).
+- `firebase-admin` `^13.8.0` (new; server-only).
+- `@supabase/supabase-js` `^2.45.0` (new).
+- `@supabase/auth-helpers-nextjs` `^0.10.0` (new — dev dep; note: deprecated in favor of `@supabase/ssr`; M10 should migrate).
+- `@firebase/app-types` `^0.9.2` (new — dev dep).
+- `@dataconnect/generated` `file:src/dataconnect-generated` (new — links to the user-committed boilerplate; likely removable in M10).
+- `server-only` `^0.0.1` (new — Next.js build-time guard package; aliased to empty shim in vitest).
+- `react` / `react-dom` / `next` / `three` / `@react-three/fiber` / `@react-three/drei` / `zustand` / `idb-keyval` — unchanged.
+
+**File paths established:**
+
+- `lib/firebase/client.ts` — browser SDK singleton (`getFirebase()` returns `{app, auth, db}`). `'use client'` directive.
+- `lib/firebase/admin.ts` — server-only SDK singleton (`getAdminFirebase()`). Starts with `import 'server-only'`.
+- `lib/firebase/types.ts` — Firestore document shapes (`UserProfile`, `SharedSkin`, `Like`). Re-exports `SkinVariant` from `lib/editor/types`.
+- `lib/supabase/client.ts` — browser Supabase singleton (`getSupabase()`, `getStorageBucket()`). `'use client'`.
+- `app/_providers/AuthProvider.tsx` — `'use client'` React context for Firebase Auth. Wrapped in root `app/layout.tsx`.
+- `firestore.rules` — project root. Firebase CLI deploy: `firebase deploy --only firestore:rules`.
+- `firebase.json` — emulator config (firestore on 8080) + dataconnect block (inert).
+- `docs/supabase-storage-policies.md` — manual-setup guide for RLS (policies live in the Supabase dashboard).
+- `docs/plans/m9-scaffolding.md` — milestone plan; `status: active` at commit time, ready to flip to `completed` on PR merge.
+- Test artifacts: `lib/firebase/__tests__/{client,admin,types,rules}.test.ts`, `lib/supabase/__tests__/client.test.ts`, `app/_providers/__tests__/AuthProvider.test.tsx`. vitest.config.ts updated to include `lib/**/__tests__/` + `app/**/__tests__/`.
+
+**Conventions established:**
+
+- SDK-access modules that enforce a client/server boundary live in `lib/` and carry `'use client'` or `import 'server-only'` as appropriate.
+- Env vars are read inside the getter, not at module load, so test-env overrides + runtime config changes propagate without module-reset.
+- Singleton getters follow `get<Subject>()` naming; test-only reset helpers are `__reset<Subject>ForTest`.
+- Non-publicly-exported library types should be derived via `ReturnType<...>` / `Parameters<...>` / `Awaited<...>` rather than cast-imported.
+- Doc-ID conventions that encode uniqueness MUST be enforced in the rules layer, not just in client code.
+- Delete rules check `resource.data` (existing doc); create rules check `request.resource.data` (incoming). Don't combine `create, delete` if the delete reads the doc being deleted.
+
+**Bundle baseline update:**
+
+- `/editor`: 375 kB First Load JS (unchanged vs M8 — Firebase SDK modules code-split into async route chunks, not in the critical path).
+- `/` (landing): 3.45 kB / 106 kB (unchanged).
+- Full client + admin + supabase chunks on disk: ~800 KB gzipped (Firebase alone contributes ~350 KB across auth + firestore + app + dependencies). These lazy-load when AuthProvider's effect fires on first mount.
+
+**Test baseline:**
+
+- 549 → **579** tests (+30). Per-unit additions approximated: Unit 1 +3 (client), Unit 2 +4 → +6 (admin — 4 initial + idempotency + missing-env in review round), Unit 3 +4 → +5 (supabase + review-added missing-env), Unit 4 +4 (types), Unit 5 +6 (rules shape), Unit 7 +5 (AuthProvider), review-added Unit 1 missing-env +1.
+
+**Audit baseline:**
+
+- **10 vulnerabilities (8 moderate, 2 low)** — all in firebase-admin transitive tree (gaxios 6.4-6.7.1, google-auth-library, uuid). Server-only scope. Flagged above; revisit when firebase-admin ships a fixed release.
+- Production (client-bundle) vulnerabilities: **0**.
+
+### Recommended reading for M10
+
+- This file's M9 §Invariants — the delete-vs-create rules distinction and the doc-ID-as-rules-enforcement pattern apply immediately to the first real `/likes` and `/skins` write paths.
+- This file's M9 §Gotchas — the skins.update-vs-likeCount transaction conflict is a design-level blocker; M10 must decide between Cloud Function and rules-rewrite paths before wiring the like-toggle.
+- `docs/supabase-storage-policies.md` — contains the Firebase-Auth-vs-Supabase-Auth divergence note that shapes how M11's upload flow must work (server route + service-role key, not direct browser upload).
+- `app/_providers/AuthProvider.tsx` — M10's session-cookie route (`app/api/auth/session/route.ts`) must call Admin SDK's `verifySessionCookie` (already exposed via `getAdminFirebase().auth.verifySessionCookie`) and set an httpOnly cookie. The client reads auth state only via the AuthProvider; the cookie is for server-side SSR.
+- `.context/compound-engineering/ce-review/m9-scaffolding-01/run-artifact.md` — residual M9-review findings that need M10/M11 follow-through.
