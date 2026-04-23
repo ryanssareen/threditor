@@ -38,11 +38,14 @@ function readEnv(): RequiredEnv {
   if (serviceRoleKey === undefined || serviceRoleKey.length === 0) {
     missing.push('SUPABASE_SERVICE_ROLE_KEY');
   }
-  if (missing.length > 0) {
+  if (
+    missing.length > 0 ||
+    supabaseUrl === undefined ||
+    serviceRoleKey === undefined
+  ) {
     throw new Error(`Supabase not configured: missing ${missing.join(', ')}`);
   }
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  return { supabaseUrl: supabaseUrl!, serviceRoleKey: serviceRoleKey!, bucket };
+  return { supabaseUrl, serviceRoleKey, bucket };
 }
 
 function makeClient(env: RequiredEnv): SupabaseClient {

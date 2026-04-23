@@ -151,7 +151,6 @@ export function PublishDialog({ isOpen, onClose, onPublish }: Props) {
         ta.style.opacity = '0';
         document.body.appendChild(ta);
         ta.select();
-        // eslint-disable-next-line @typescript-eslint/no-deprecated
         document.execCommand('copy');
         document.body.removeChild(ta);
       }

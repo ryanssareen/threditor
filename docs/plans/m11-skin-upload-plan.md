@@ -1,7 +1,7 @@
 ---
 title: "M11: Skin Upload + OG Image Generation"
 type: feat
-status: active
+status: completed
 date: 2026-04-23
 ---
 

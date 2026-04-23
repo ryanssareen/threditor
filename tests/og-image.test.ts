@@ -66,7 +66,6 @@ beforeAll(() => {
   HTMLCanvasElement.prototype.toBlob = function mockToBlob(
     cb: BlobCallback,
     type?: string,
-    _quality?: number,
   ) {
     const bytes = new Uint8Array([
       // 4-byte RIFF header + size (ignored) + 4-byte WEBP tag.

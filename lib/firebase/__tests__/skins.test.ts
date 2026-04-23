@@ -11,7 +11,6 @@ const skinSet = vi.hoisted(() => vi.fn());
 const userSet = vi.hoisted(() => vi.fn());
 const batchCommit = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const userGet = vi.hoisted(() => vi.fn());
-const incrementSentinel = vi.hoisted(() => ({ __sentinel: 'increment', value: 1 }));
 const serverTimestampSentinel = vi.hoisted(() => ({ __sentinel: 'serverTimestamp' }));
 
 vi.mock('firebase-admin/firestore', () => ({

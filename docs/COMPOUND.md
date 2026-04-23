@@ -785,3 +785,93 @@
 - `docs/supabase-storage-policies.md` — M11's upload MUST use the service-role key because the Supabase RLS doesn't see Firebase Auth.
 - `app/api/auth/session/route.ts` — pattern for M11's `/api/skins` POST (same Node runtime, same `server-only` + `validateEnv` shape).
 - M10 COMPOUND §Gotchas 1 (bundle baseline is 478 kB now) — plan M11 with that in mind.
+
+## M11: Skin Upload + OG Image Generation — 2026-04-23
+
+### What worked
+
+- **Server-side orchestration of the whole publish pipeline.** Client only sends multipart/form-data; the server owns verify-session → generate skinId → upload Supabase → write Firestore-batch → rollback-on-fail. Ordering (Storage first, Firestore second) means a Firestore failure rolls back Storage via `deleteSkinAssets`; a Storage failure (OG-after-PNG) is rolled back inside the upload helper itself. Two independent rollback paths, both tested. No orphaned uploads + no orphaned Firestore docs possible.
+- **Handler-inline dynamic imports for the three.js OG generator.** The M10 pattern (`await import('firebase/auth')` inside handlers) extended to the OG path: `await import('@/lib/editor/og-image')` lives inside EditorLayout's `handlePublish` callback. Combined with `next/dynamic` on PublishDialog itself, the heavy WebGL scene code stays off the editor's critical chunk. Bundle delta stayed at +2 kB (target was +5 kB).
+- **UUID v7 hand-rolled in 32 LOC to avoid a new dep.** Same discipline as M7's PNG encoder (the Firebase-init JSON generator was also hand-rolled). RFC 9562 §5.7 is small enough that rolling it locally is strictly cheaper than adding `uuid@10`. Side benefit: the timestamp prefix gives chronological ordering without needing a Firestore composite index on `createdAt` for newest-first queries (M12 will benefit).
+- **`merge: true` + pre-read on /users/{uid}.** The default-username-bootstrap problem (first-time publisher has no user doc) needed to coexist with the skinCount-increment-on-every-publish case. Solution: read the user doc once before the batch commit; conditionally include `createdAt` + `username` + `displayName` in the merge payload only when `!exists`. Costs one extra Firestore read per publish (~1 ms) but keeps the `createdAt` invariant stable across republishes.
+- **Storage path convention matches DESIGN §11.5 verbatim.** `skins/{uid}/{skinId}.png` + `skins/{uid}/{skinId}-og.webp`. Supabase RLS (even though bypassed by service-role) stays semantically aligned; the M11 server is a good citizen of the shared bucket.
+- **Fail-soft OG generation.** `generateOGImage` returns `null` on WebGL-unavailable, toBlob-null, or any thrown error. `/api/skins/publish` accepts null and stores the Firestore doc with `ogImageUrl: null`. DESIGN §11.6 explicitly allows this; the client gracefully degrades without blocking publish.
+- **Reusing M8's `exportLayersToBlob` for the 64×64 PNG.** Zero new compositor code for the upload. One pipeline, one set of invariants.
+
+### What didn't
+
+- **The plan routed the Publish button "into EditorHeader" but EditorHeader was architecturally a sibling of EditorLayout (both mounted in `app/editor/page.tsx`).** The Publish handler needs access to layers + variant + TextureManager canvas — all of which live in EditorLayout. Fix: move EditorHeader mounting into EditorLayout's return, passing `onPublishClick` as a prop. `app/editor/page.tsx` simplified back to a thin `<EditorLayout />` wrapper. Pattern lesson: when a "decorative" header component needs domain state, relocate the header into the stateful parent rather than threading state + refs up to a sibling.
+- **`next/dynamic` on PublishDialog initially broke the dialog test's `vi.mock` of PublishDialog.** Same story as M10 Unit 5 EditorHeader's next/dynamic + vi.mock clash. We avoided re-solving it for M11 because the PublishDialog tests run directly against the component (not through EditorLayout); EditorLayout tests for the publish flow land in later milestones when the integration surface grows.
+- **Lint warning hygiene creeping.** Four new M11-introduced warnings (3 unused-eslint-disable from defensive directives, 1 unused var in test mock) crept in during development. Cleaned up at Unit 7; ended at 8 pre-existing warnings (M10 baseline). Lesson: run `npm run lint` mid-unit, not just at close-out.
+- **Firestore rules divergence stays.** DESIGN §11.5 describes client-side `skins.create`. M11's write is server-side via Admin SDK (bypasses rules). The rules-as-documented are still correct for any FUTURE client-side write path, but for M11 the rules are purely a defense-in-depth layer, not the primary control. Documented in M11 plan §Documentation, not a bug but worth flagging for reviewers.
+
+### Invariants discovered
+
+- **Uploads (Storage) must precede Firestore writes in any create-like pipeline.** The rollback direction is: Firestore failure → delete Storage objects. You cannot cleanly "undo a Firestore create" with the Admin SDK if Storage is still pending; the sequence must be Storage-first so the Firestore commit is the atomic all-or-nothing point of no return. Pattern extends to any future milestone that writes to two services.
+- **Server-only modules form a layered cake:** `server-only` import guard → env validation at invocation time → stateless per-request client (`persistSession: false`). Every new server module (M10's `auth.ts`, M11's `storage-server.ts`, `skins.ts`, `publish/route.ts`) follows all three. The pattern is now the project's default for any secret-touching code.
+- **`FieldValue.increment(n)` is lock-free** — it's a server-side CRDT semantics operation. Batch commits using increment don't need a Firestore transaction because two concurrent increments on the same doc still converge. This is why Unit 4 uses `batch.set({..., skinCount: increment(1)}, { merge: true })` instead of the heavier `runTransaction`. Pattern: prefer `increment` + batch over transaction whenever the only cross-doc dependency is numeric counters.
+- **PublishDialog's `onPublish` prop is the testable seam.** The component doesn't know about `fetch`, `FormData`, or the upload pipeline — it only knows about `(meta) => Promise<PublishResult>`. The parent owns the mechanics. This decoupling lets PublishDialog tests run without mocking Firebase, Supabase, OR the network stack: a plain spy on `onPublish` is sufficient. Pattern: dialog components should accept handlers as props, not reach into the global network/state themselves.
+- **React 19 + `required` inputs + `<form onSubmit>`: the browser's native validation runs BEFORE `onSubmit`.** A jsdom test that clicks Submit without filling required fields sees `onSubmit` never fire. Not a bug — it's form-validation doing its job. Tests must fill required fields OR use an input-level `fillCredentials`-style helper.
+
+### Gotchas for future milestones
+
+- **M12 (gallery) bundle baseline is 480 kB, up from M10's 478.** M11 added ~2 kB to /editor (PublishDialog loader + FormData builder in EditorLayout's publish handler). The gallery page will be a new route with its own First Load JS budget; the existing firebase/auth critical-path chunks are shared across routes so the gallery's marginal cost will be lower than raw route size suggests.
+- **`/skin/[id]` route does not exist yet.** M11's PublishDialog success state renders a permalink URL pointing at `/skin/{skinId}` which 404s until M12 (gallery) or M13 (detail page) ships it. Plan D9 accepted this: the URL is copy-ready for a user to send to a friend who will retrieve it once the page exists. Not ideal but the tradeoff was "ship publish now without the detail page" vs "couple the milestones."
+- **`firebase-admin` transitive gaxios/uuid vulns (M9-accepted) are NOW being exercised.** M9 said "revisit when firebase-admin ships a fixed release, or when M11 first writes from a server action." M11 is the "first writes from a server action" trigger. The vulns remain server-only and unexploitable from the client surface, but the attack surface for any server-side RCE in gaxios/uuid is now real if an attacker finds one. Monitoring note: watch `npm audit` on CI; if a specific CVE publishes for these packages, prioritize firebase-admin bump.
+- **SUPABASE_SERVICE_ROLE_KEY must be set in Vercel env vars** for all three environments (Production + Preview + Development) before the first production publish attempt. Setting it marks M11's external config prerequisite; without it every publish returns 500. Manual QA step 1 of Unit 7 is "verify env var exists."
+- **Supabase bucket `skins` must have the RLS policies documented in `docs/supabase-storage-policies.md` even though the server bypasses them.** Reasoning: if M12+ ever does a direct client read (e.g., displaying a public skin URL), the SELECT policy being absent would break it. Defense in depth.
+- **Public Supabase URL pattern assumption:** `${NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/${bucket}/${path}`. If Supabase changes its URL scheme in a future version, this pattern breaks silently (URL is constructed, upload succeeds, but the returned URL returns 404). Unit 3's tests pin the shape; manual QA verifies the actual HTTP response.
+- **The OG image renderer creates a fresh WebGLRenderer per-publish** and disposes in `finally`. Repeated publishes don't leak GPU contexts (tested). But if a user publishes 20+ times in quick succession on a low-end GPU, the transient memory pressure may cause a WebGL context loss — the fail-soft null-return handles this, but the user sees "publish succeeded, OG missing" without knowing why. No telemetry to distinguish this case.
+- **`ownerUsername` defaults to email local-part, which leaks PII into public Firestore docs.** The `/skins` doc has `ownerUsername` readable by any visitor. If a user signed up with a work email (`jane@acme.com`), `ownerUsername: 'jane'` is visible. M13 (profile) will add a rename flow; until then the default is the best we can do without a setup wizard. Documented acceptable.
+- **`thumbnailUrl === storageUrl` in M11.** The Firestore doc's thumbnailUrl is the same 64×64 PNG as storageUrl. No resizing pipeline yet. A future milestone (M13?) that adds a dedicated 256×256 thumbnail should update the DB migration story — changing thumbnailUrl for existing docs needs a backfill. Accept the current shape for M11.
+
+### Pinned facts for next milestones
+
+**Exact version deltas from M10:** none. Zero new dependencies (UUID v7 hand-rolled; OG image generated via existing three.js). @testing-library/user-event from M10 unused in M11 (carries forward for M12+ if needed).
+
+**File paths established:**
+
+- `lib/editor/tags.ts` — `validateName` + `validateTags` + `normalizeTagInput`. Pure module, no deps. Shared by client (PublishDialog) + server (API route).
+- `lib/editor/og-image.ts` — `generateOGImage(source, variant) → Promise<Blob | null>`. Client-only, `'use client'`. Fail-soft.
+- `lib/supabase/storage-server.ts` — `uploadSkinAssets` + `deleteSkinAssets`. `server-only`, service-role client per-request.
+- `lib/firebase/skins.ts` — `createSkinDoc` + `defaultUsername`. `server-only`, Admin SDK batch write.
+- `lib/firebase/uuid-v7.ts` — `generateUuidV7()` + `UUID_V7_REGEX`. Pure module, works client + server.
+- `app/_components/PublishDialog.tsx` — ARIA dialog with name + tags form, success state with Copy button. Accepts `onPublish` handler prop.
+- `app/_components/AuthDialog.tsx` — extended with optional `initialHint` prop.
+- `app/_components/EditorHeader.tsx` — extended with optional `onPublishClick` prop. Publish-while-signed-out opens AuthDialog with `initialHint='Sign in to publish'`.
+- `app/api/skins/publish/route.ts` — POST route, Node runtime, multipart/form-data. Orchestrates session → upload → firestore → rollback.
+- `app/editor/page.tsx` — simplified to `<EditorLayout />`. Header is now mounted inside EditorLayout.
+- `app/editor/_components/EditorLayout.tsx` — renders EditorHeader + PublishDialog; owns `handlePublish` callback that uses dynamic imports for og-image + export modules.
+
+**Conventions established:**
+
+- Heavy client dependencies (firebase/auth, three.js OG) are dynamic-imported inside event handlers, not top-level. Keeps critical-path bundle stable across milestones.
+- Dialog components accept async handler props; the parent owns fetch + orchestration. Testable without network/state mocks.
+- Server write routes follow the M10+M11 pattern: `import 'server-only'` + env validation at invocation + stateless per-request client + Storage-first-Firestore-second rollback.
+- UUID v7 is the canonical ID for user-generated entities (future pattern — gallery likes, comments, etc. should follow).
+- `FieldValue.increment(n)` + batch > `runTransaction` when the only cross-doc coupling is numeric.
+- Default usernames derive from session email local-part on the server; client never sees the email in server responses.
+- Public URLs: `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${uid}/${skinId}.${ext}`.
+
+**Bundle baseline update:**
+
+- `/editor`: 478 → **480 kB** First Load JS (+2 kB; budget was +5 kB).
+- `/` (landing): 106 kB (unchanged).
+- `/api/auth/session` + `/api/auth/signout` + `/api/skins/publish`: **102 kB each** (framework baseline — route handlers are tiny).
+
+**Test baseline:**
+
+- 626 → **701** tests (+75). Per-unit: Unit 1 +15 (tags) + 12 (dialog) = 27. Unit 2 +9 (OG). Unit 3 +10 (storage-server). Unit 4 +5 (uuid-v7) + 11 (skins) = 16. Unit 5 +13 (publish route). Unit 6 is covered via existing EditorHeader tests (no new file added).
+
+**Audit baseline:**
+
+- Production client bundle: **0 vulnerabilities** (unchanged).
+- Server: firebase-admin transitive vulns (M9-accepted), now being exercised on every publish. Monitor.
+
+### Recommended reading for M12
+
+- This file's M11 §Invariants — Storage-first-Firestore-second ordering, FieldValue.increment > transaction, server-only module layered pattern — are direct precedents for M12's gallery queries + like-toggle flow (DESIGN §11.4).
+- DESIGN §11.3 composite indexes — M12 will need `tags + createdAt` (tag filter), `ownerUid + createdAt` (profile page in M13), `likeCount + createdAt` (trending). Firestore.indexes.json needs updating.
+- `lib/firebase/uuid-v7.ts` — M12's "newest first" gallery query can `orderBy(documentId(), 'desc')` instead of `orderBy('createdAt', 'desc')` and skip the createdAt composite index, thanks to v7's time-sortable prefix.
+- `app/_components/PublishDialog.tsx` + `AuthDialog.tsx` + `ExportDialog.tsx` + `TemplateBottomSheet.tsx` — four hand-rolled ARIA dialogs now. Threshold for extracting a shared hook (documented as 3 in M10 §Gotchas) is exceeded; the next UI milestone should consider a `useFocusTrap()` + `useDialogKeybindings()` pair.
+- M11 plan's §Risks row 4 (`CreatedAt` overwrite on merge) — pattern is documented here; future milestones that use merge on /users doc fields should consider similar pre-read guards.
