@@ -16,8 +16,12 @@
     "test": "NODE_ENV=development vitest run"
   },
   "dependencies": {
+    "@dataconnect/generated": "file:src/dataconnect-generated",
     "@react-three/drei": "10.7.7",
     "@react-three/fiber": "9.6.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "firebase": "^11.2.0",
+    "firebase-admin": "^13.8.0",
     "idb-keyval": "6.2.2",
     "next": "15.5.15",
     "react": "19.2.5",
@@ -27,6 +31,8 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "3.3.1",
+    "@firebase/app-types": "^0.9.2",
+    "@supabase/auth-helpers-nextjs": "^0.10.0",
     "@tailwindcss/postcss": "4.2.2",
     "@testing-library/dom": "10.4.0",
     "@testing-library/react": "16.1.0",

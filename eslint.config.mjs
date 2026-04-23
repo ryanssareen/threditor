@@ -16,6 +16,10 @@ const eslintConfig = [
       'out/**',
       'build/**',
       'next-env.d.ts',
+      // M9: generated Firebase Data Connect SDK (external tool output).
+      'src/dataconnect-generated/**',
+      // M9: Firebase Data Connect schema/queries directory (non-TS).
+      'dataconnect/**',
     ],
   },
   ...compat.extends('next/core-web-vitals', 'next/typescript'),

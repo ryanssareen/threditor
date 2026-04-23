@@ -24,6 +24,9 @@ yarn-error.log*
 # local env files
 .env*.local
 
+# Firebase Admin SDK (SECRET - never commit)
+firebase-adminsdk.json
+
 # vercel
 .vercel
 
