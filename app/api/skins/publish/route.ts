@@ -58,9 +58,59 @@ function json(body: PublishResponse, status: number): NextResponse {
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    // 1. Session.
-    const session = await getServerSession();
-    if (session === null) {
+    // 1. Authentication.
+    //
+    // Primary path: Bearer token in Authorization header. The client
+    // sends a fresh Firebase ID token; we verify it with Admin SDK.
+    // This is cookie-free and survives any edge-layer Set-Cookie
+    // interference (e.g., Vercel Deployment Protection).
+    //
+    // Fallback path: session cookie via getServerSession(). Kept so
+    // server components + future SSR pages still work.
+    let uid: string | null = null;
+    let email: string | undefined;
+
+    const authHeader = req.headers.get('authorization') ?? '';
+    const bearerMatch = /^Bearer\s+(.+)$/i.exec(authHeader);
+    if (bearerMatch !== null) {
+      try {
+        const { auth } = (await import('@/lib/firebase/admin')).getAdminFirebase();
+        const decoded = await auth.verifyIdToken(bearerMatch[1]);
+        uid = decoded.uid;
+        email = decoded.email;
+      } catch (bearerErr) {
+        const code =
+          bearerErr !== null && typeof bearerErr === 'object' && 'code' in bearerErr
+            ? String((bearerErr as { code: unknown }).code)
+            : 'unknown';
+        const msg =
+          bearerErr instanceof Error ? bearerErr.message.slice(0, 200) : String(bearerErr).slice(0, 200);
+        console.error(`publish: bearer verify failed code=${code} message=${msg}`);
+        const res = NextResponse.json(
+          {
+            error: 'Invalid authentication token',
+            debug: {
+              reason: 'bearer_verify_failed',
+              verifyErrorCode: code,
+              verifyErrorMessage: msg,
+            },
+          },
+          { status: 401 },
+        );
+        res.headers.set('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+        return res;
+      }
+    }
+
+    if (uid === null) {
+      const session = await getServerSession();
+      if (session !== null) {
+        uid = session.uid;
+        email = session.email;
+      }
+    }
+
+    if (uid === null) {
       // Diagnostic: distinguish "no cookie sent" from "cookie present
       // but rejected". Include the findings in BOTH the log and the
       // response body so the user can see the reason in DevTools
@@ -122,7 +172,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
       return res;
     }
-    const uid = session.uid;
 
     // 2. Parse + validate body. Next's Request.formData() is supported
     // on Node runtime in 15+.
@@ -214,7 +263,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // 5. Firestore. If this throws, roll back Storage.
     try {
-      const ownerUsername = session.email?.split('@')[0] ?? defaultUsername(uid);
+      const ownerUsername = email?.split('@')[0] ?? defaultUsername(uid);
       await createSkinDoc({
         skinId,
         uid,

@@ -514,6 +514,21 @@ export function EditorLayout() {
         variant,
       );
 
+      // Bearer-token auth path — cookie-free. Grab a fresh Firebase
+      // ID token client-side and send it in the Authorization header.
+      // The server verifies it directly with the Admin SDK. This
+      // bypasses any Vercel edge layer (Deployment Protection, etc.)
+      // that may strip Set-Cookie headers from the session route.
+      const { getFirebase } = await import('@/lib/firebase/client');
+      const { auth } = getFirebase();
+      const currentUser = auth.currentUser;
+      if (currentUser === null) {
+        throw new Error(
+          'You are not signed in. Click Sign In in the top right, then try Publish again.',
+        );
+      }
+      const idToken = await currentUser.getIdToken(/* forceRefresh */ false);
+
       const form = new FormData();
       form.append('name', meta.name);
       for (const tag of meta.tags) form.append('tags', tag);
@@ -523,76 +538,14 @@ export function EditorLayout() {
         form.append('ogWebp', ogBlob, 'skin-og.webp');
       }
 
-      // Self-healing: if the server rejects with "cookie missing" or
-      // "verify failed" (e.g., session cookie expired/revoked/never-
-      // set), grab a fresh Firebase ID token client-side and re-mint
-      // the session cookie, then retry the publish ONCE.
-      const doPublish = () =>
-        fetch('/api/skins/publish', {
-          method: 'POST',
-          body: form,
-          credentials: 'include',
-        });
-
-      let res = await doPublish();
-      if (res.status === 401) {
-        console.warn(
-          'publish: 401 — re-establishing session cookie and retrying',
-        );
-        try {
-          const [{ getFirebase }] = await Promise.all([
-            import('@/lib/firebase/client'),
-          ]);
-          const { auth } = getFirebase();
-          const user = auth.currentUser;
-          if (user === null) {
-            throw new Error(
-              'You are not signed in. Click Sign In in the top right, then try Publish again.',
-            );
-          }
-          // Force-refresh the ID token so we don't reuse a stale one.
-          const idToken = await user.getIdToken(true);
-          const sessionRes = await fetch('/api/auth/session', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ idToken }),
-            credentials: 'include',
-          });
-          if (!sessionRes.ok) {
-            let dbg = '';
-            try {
-              const d = (await sessionRes.json()) as {
-                error?: string;
-                debug?: Record<string, unknown>;
-              };
-              if (d.debug !== undefined) dbg = JSON.stringify(d.debug);
-            } catch {
-              // ignore
-            }
-            throw new Error(
-              `Could not re-establish session (HTTP ${sessionRes.status})${dbg !== '' ? ' — ' + dbg : ''}`,
-            );
-          }
-          // Rebuild the form — FormData is consumed by the first fetch.
-          const retryForm = new FormData();
-          retryForm.append('name', meta.name);
-          for (const tag of meta.tags) retryForm.append('tags', tag);
-          retryForm.append('variant', variant);
-          retryForm.append('skinPng', pngBlob, 'skin.png');
-          if (ogBlob !== null) {
-            retryForm.append('ogWebp', ogBlob, 'skin-og.webp');
-          }
-          res = await fetch('/api/skins/publish', {
-            method: 'POST',
-            body: retryForm,
-            credentials: 'include',
-          });
-        } catch (retryErr) {
-          const msg =
-            retryErr instanceof Error ? retryErr.message : String(retryErr);
-          throw new Error(msg);
-        }
-      }
+      const res = await fetch('/api/skins/publish', {
+        method: 'POST',
+        body: form,
+        credentials: 'include',
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+        },
+      });
 
       if (!res.ok) {
         let msg = `Publish failed (HTTP ${res.status})`;
