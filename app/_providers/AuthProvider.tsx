@@ -38,6 +38,18 @@ type AuthContextValue = {
 // tree). Using `null` as the initial context so the identity check is
 // reliable — a default `{ user: null, loading: true }` value would
 // silently swallow the error.
+//
+// PII NOTE (M9 security review, decided M10 Unit 6):
+// AuthContextValue.user is the full Firebase `User`, which includes
+// email, phoneNumber, providerData, and per-provider UIDs. This is
+// acceptable for M10-M12 — every consuming component legitimately
+// needs uid (M10 UserMenu), email (M11 publish path, M13 settings),
+// or displayName/photoURL (M10 avatar). Narrowing to
+// `Pick<User, 'uid' | 'displayName' | 'photoURL'>` now would force
+// a second hook `useFirebaseUser()` just for email, which adds surface
+// without solving a real leak. Revisit in M13 when we have a concrete
+// "settings page needs email but shouldn't live in global context"
+// requirement. See docs/COMPOUND.md §M9 Gotchas for full discussion.
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
