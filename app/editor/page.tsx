@@ -1,18 +1,9 @@
-import { EditorHeader } from '../_components/EditorHeader';
 import { EditorLayout } from './_components/EditorLayout';
 
+// M11: EditorHeader is now rendered inside EditorLayout so the Publish
+// handler has direct access to the store + TextureManager. Removing
+// the wrapper div that M10 added — EditorLayout's own return value
+// now includes the fixed header and the reduced-height content stack.
 export default function EditorPage() {
-  return (
-    <>
-      <EditorHeader />
-      {/* Header is fixed at 56px (h-14); offset the editor so it
-          doesn't sit behind it. EditorLayout uses h-dvh internally;
-          the pt-14 wrapper does NOT add to its height because the
-          inner element's h-dvh overrides. Instead, the editor's
-          root height is reduced in EditorLayout.tsx to match. */}
-      <div>
-        <EditorLayout />
-      </div>
-    </>
-  );
+  return <EditorLayout />;
 }

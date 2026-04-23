@@ -32,7 +32,9 @@ vi.mock('@/lib/firebase/uuid-v7', () => ({
 
 import { POST } from '../publish/route';
 
-const makeRequest = async (fields: Record<string, string | Blob | Blob[]>): Promise<Request> => {
+const makeRequest = async (
+  fields: Record<string, string | Blob | Array<string | Blob>>,
+): Promise<Request> => {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) {
     if (Array.isArray(v)) {

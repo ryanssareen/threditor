@@ -30,6 +30,12 @@ type AuthState = 'idle' | 'loading' | 'success' | 'error';
 type Props = {
   isOpen: boolean;
   onClose: () => void;
+  /**
+   * M11: optional hint text shown above the Google sign-in button,
+   * e.g. "Sign in to publish". Purely decorative — does not change
+   * the auth flow.
+   */
+  initialHint?: string;
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -61,7 +67,7 @@ async function postSessionCookie(idToken: string): Promise<void> {
   }
 }
 
-export function AuthDialog({ isOpen, onClose }: Props) {
+export function AuthDialog({ isOpen, onClose, initialHint }: Props) {
   const [mode, setMode] = useState<AuthMode>('signin');
   const [state, setState] = useState<AuthState>('idle');
   const [email, setEmail] = useState('');
@@ -166,6 +172,15 @@ export function AuthDialog({ isOpen, onClose }: Props) {
           >
             {error}
           </div>
+        )}
+
+        {error === '' && initialHint !== undefined && (
+          <p
+            data-testid="auth-dialog-hint"
+            className="mb-4 text-center text-sm text-text-secondary"
+          >
+            {initialHint}
+          </p>
         )}
 
         <button
