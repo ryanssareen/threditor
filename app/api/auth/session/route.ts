@@ -75,7 +75,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
     return response;
   } catch (err) {
-    console.error('session route: auth failed', err);
+    // Flatten the error into a single log string so Vercel's log
+    // viewer doesn't truncate the diagnostic detail. Firebase Admin
+    // Auth surfaces useful codes like auth/argument-error (PEM bad),
+    // auth/id-token-expired, auth/project-not-found (env vars
+    // mismatch client project), auth/invalid-credential, etc.
+    const code =
+      err !== null && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : 'unknown';
+    const message =
+      err instanceof Error ? err.message : String(err);
+    console.error(
+      `session route: auth failed code=${code} message=${message.slice(0, 300)}`,
+    );
     return NextResponse.json(
       { error: 'Authentication failed' },
       { status: 401 },
