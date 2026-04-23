@@ -61,9 +61,44 @@ async function postSessionCookie(idToken: string): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ idToken }),
+    credentials: 'include',
   });
   if (!res.ok) {
-    throw new Error(`Failed to create session (${res.status})`);
+    // Surface the server's debug object so the user sees the actual
+    // Firebase error (auth/argument-error, project-not-found, etc.)
+    // in the dialog — no DevTools digging required.
+    let debugStr = '';
+    try {
+      const data = (await res.json()) as {
+        error?: string;
+        debug?: Record<string, unknown>;
+      };
+      if (data.debug !== undefined) {
+        debugStr = ' — ' + JSON.stringify(data.debug);
+      }
+    } catch {
+      // response wasn't JSON
+    }
+    throw new Error(`Failed to create session (HTTP ${res.status})${debugStr}`);
+  }
+}
+
+async function rollbackFirebaseClientSignin(): Promise<void> {
+  // If the server-side session-cookie POST failed, the Firebase
+  // client already signed the user in (popup success → onAuthState-
+  // Changed fired → UserMenu showing). Without a server cookie the
+  // user is in a "half signed in" state: UserMenu visible, publish
+  // fails with 401. Sign them out client-side so the UI truthfully
+  // reflects that auth didn't complete.
+  try {
+    const [{ signOut }, { getFirebase }] = await Promise.all([
+      import('firebase/auth'),
+      import('@/lib/firebase/client'),
+    ]);
+    const { auth } = getFirebase();
+    await signOut(auth);
+  } catch {
+    // best-effort
   }
 }
 
@@ -91,6 +126,7 @@ export function AuthDialog({ isOpen, onClose, initialHint }: Props) {
   const handleGoogleSignIn = async () => {
     setState('loading');
     setError('');
+    let firebaseSignedIn = false;
     try {
       // Dynamic import so the popup + Google provider modules are in a
       // chunk that loads only when the user clicks Sign In — keeps the
@@ -102,11 +138,17 @@ export function AuthDialog({ isOpen, onClose, initialHint }: Props) {
       const { auth } = getFirebase();
       const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
+      firebaseSignedIn = true;
       const idToken = await result.user.getIdToken();
       await postSessionCookie(idToken);
       setState('success');
       setTimeout(onClose, 500);
     } catch (err) {
+      if (firebaseSignedIn) {
+        // Roll back client-side Firebase state so UserMenu doesn't
+        // misleadingly appear when the server cookie wasn't actually set.
+        await rollbackFirebaseClientSignin();
+      }
       handleAuthError(err);
     }
   };
@@ -115,6 +157,7 @@ export function AuthDialog({ isOpen, onClose, initialHint }: Props) {
     e.preventDefault();
     setState('loading');
     setError('');
+    let firebaseSignedIn = false;
     try {
       const { signInWithEmailAndPassword, createUserWithEmailAndPassword } =
         await import('firebase/auth');
@@ -123,11 +166,15 @@ export function AuthDialog({ isOpen, onClose, initialHint }: Props) {
         mode === 'signin'
           ? await signInWithEmailAndPassword(auth, email, password)
           : await createUserWithEmailAndPassword(auth, email, password);
+      firebaseSignedIn = true;
       const idToken = await result.user.getIdToken();
       await postSessionCookie(idToken);
       setState('success');
       setTimeout(onClose, 500);
     } catch (err) {
+      if (firebaseSignedIn) {
+        await rollbackFirebaseClientSignin();
+      }
       handleAuthError(err);
     }
   };
@@ -168,7 +215,7 @@ export function AuthDialog({ isOpen, onClose, initialHint }: Props) {
           <div
             role="alert"
             data-testid="auth-dialog-error"
-            className="mb-4 rounded border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400"
+            className="mb-4 whitespace-pre-wrap break-words rounded border border-red-500/20 bg-red-500/10 p-3 font-mono text-xs text-red-400"
           >
             {error}
           </div>
