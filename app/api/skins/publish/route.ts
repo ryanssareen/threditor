@@ -257,8 +257,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       storageUrl = uploaded.storageUrl;
       ogImageUrl = uploaded.ogImageUrl;
     } catch (err) {
-      console.error('publish: upload failed', { uid, skinId, err });
-      return json({ error: 'Upload failed' }, 500);
+      const msg = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
+      console.error(`publish: upload failed message=${msg} uid=${uid} skinId=${skinId}`);
+      const res = NextResponse.json(
+        {
+          error: 'Upload failed',
+          debug: {
+            reason: 'supabase_upload_failed',
+            uploadErrorMessage: msg,
+          },
+        },
+        { status: 500 },
+      );
+      res.headers.set(
+        'Cache-Control',
+        'private, no-store, no-cache, must-revalidate',
+      );
+      return res;
     }
 
     // 5. Firestore. If this throws, roll back Storage.
@@ -276,15 +291,34 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         tags: tagsNormalized,
       });
     } catch (err) {
-      console.error('publish: firestore failed, rolling back storage', {
-        uid,
-        skinId,
-        err,
-      });
+      const code =
+        err !== null && typeof err === 'object' && 'code' in err
+          ? String((err as { code: unknown }).code)
+          : 'unknown';
+      const message =
+        err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
+      console.error(
+        `publish: firestore failed code=${code} message=${message} uid=${uid} skinId=${skinId}`,
+      );
       await deleteSkinAssets({ uid, skinId }).catch(() => {
         // Best-effort — logged inside deleteSkinAssets.
       });
-      return json({ error: 'Publish failed, please retry' }, 500);
+      const res = NextResponse.json(
+        {
+          error: 'Publish failed, please retry',
+          debug: {
+            reason: 'firestore_write_failed',
+            firestoreErrorCode: code,
+            firestoreErrorMessage: message,
+          },
+        },
+        { status: 500 },
+      );
+      res.headers.set(
+        'Cache-Control',
+        'private, no-store, no-cache, must-revalidate',
+      );
+      return res;
     }
 
     // 6. Success.
