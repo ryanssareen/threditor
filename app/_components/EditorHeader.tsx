@@ -28,9 +28,31 @@ import { UserMenu } from './UserMenu';
 // land in code-split chunks that only load when the user clicks Sign
 // In / Sign Out — keeping the editor's critical path lean.
 
-export function EditorHeader() {
+type Props = {
+  /**
+   * M11: called when a signed-in user clicks Publish. Parent owns
+   * the PublishDialog + the actual export/upload flow — EditorHeader
+   * is decorative. When the user clicks Publish while signed out,
+   * EditorHeader opens AuthDialog with a "Sign in to publish" hint
+   * internally; the parent only hears about it once the user is
+   * signed in and clicks Publish again.
+   */
+  onPublishClick?: () => void;
+};
+
+export function EditorHeader({ onPublishClick }: Props = {}) {
   const { user, loading } = useAuth();
   const [showAuthDialog, setShowAuthDialog] = useState(false);
+  const [authHint, setAuthHint] = useState<string | undefined>(undefined);
+
+  const handlePublishFromHeader = () => {
+    if (user === null) {
+      setAuthHint('Sign in to publish');
+      setShowAuthDialog(true);
+      return;
+    }
+    onPublishClick?.();
+  };
 
   return (
     <>
@@ -47,7 +69,18 @@ export function EditorHeader() {
             threditor
           </Link>
 
-          <div>
+          <div className="flex items-center gap-2">
+            {!loading && onPublishClick !== undefined && (
+              <button
+                type="button"
+                data-testid="editor-header-publish"
+                onClick={handlePublishFromHeader}
+                className="rounded border border-accent bg-transparent px-3 py-1.5 text-sm font-medium text-accent transition-colors hover:bg-accent hover:text-canvas"
+              >
+                Publish
+              </button>
+            )}
+
             {loading ? (
               <div
                 data-testid="editor-header-loading"
@@ -60,7 +93,10 @@ export function EditorHeader() {
               <button
                 type="button"
                 data-testid="editor-header-sign-in"
-                onClick={() => setShowAuthDialog(true)}
+                onClick={() => {
+                  setAuthHint(undefined);
+                  setShowAuthDialog(true);
+                }}
                 className="rounded bg-accent px-4 py-2 text-sm font-medium text-canvas transition-colors hover:bg-accent-hover"
               >
                 Sign In
@@ -72,7 +108,11 @@ export function EditorHeader() {
 
       <AuthDialog
         isOpen={showAuthDialog}
-        onClose={() => setShowAuthDialog(false)}
+        onClose={() => {
+          setShowAuthDialog(false);
+          setAuthHint(undefined);
+        }}
+        initialHint={authHint}
       />
     </>
   );

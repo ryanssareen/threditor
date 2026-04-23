@@ -21,6 +21,8 @@ import { TIMING } from '@/lib/editor/templates';
 import { UndoStack, writeLayerRegion, type EditorActions } from '@/lib/editor/undo';
 import { useTextureManagerBundle } from '@/lib/editor/use-texture-manager';
 import type { Layer, Stroke, TemplateMeta } from '@/lib/editor/types';
+import { EditorHeader } from '@/app/_components/EditorHeader';
+import type { PublishResult } from '@/app/_components/PublishDialog';
 import { AffordancePulse } from './AffordancePulse';
 import { ContextualHintOverlay } from './ContextualHintOverlay';
 import { EditorCanvas } from './EditorCanvas';
@@ -31,6 +33,16 @@ import { Sidebar } from './Sidebar';
 import { TemplateGate } from './TemplateGate';
 import { useTemplateGate } from './useTemplateGate';
 import { ViewportUV } from './ViewportUV';
+import dynamic from 'next/dynamic';
+
+// M11: lazy-load the PublishDialog — both the dialog and its
+// onPublish handler (which dynamically imports the OG generator
+// from lib/editor/og-image.ts) stay out of the editor critical
+// path until the user clicks Publish.
+const PublishDialog = dynamic(
+  () => import('@/app/_components/PublishDialog').then((m) => m.PublishDialog),
+  { ssr: false },
+);
 
 export function EditorLayout() {
   const variant = useEditorStore((s) => s.variant);
@@ -80,6 +92,7 @@ export function EditorLayout() {
 
   // M8 Unit 2: export dialog open state.
   const [exportOpen, setExportOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
 
   // M8 Unit 7/8: first-paint sequence.
   //
@@ -478,14 +491,82 @@ export function EditorLayout() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [undoStack, buildActions]);
 
+  // M11 Unit 6: publish flow.
+  //
+  // PublishDialog's onPublish handler is the seam that ties together
+  // M8's exportLayersToBlob (the PNG), M11 Unit 2's generateOGImage
+  // (the 1200x630 WebP), and M11 Unit 5's /api/skins/publish route.
+  // Heavy three.js code for OG generation is imported dynamically so
+  // it stays off the editor's critical path.
+  const handlePublish = useCallback(
+    async (meta: { name: string; tags: string[] }): Promise<PublishResult> => {
+      if (bundle === null) {
+        throw new Error('Editor not ready');
+      }
+      const [{ exportLayersToBlob }, { generateOGImage }] = await Promise.all([
+        import('@/lib/editor/export'),
+        import('@/lib/editor/og-image'),
+      ]);
+
+      const pngBlob = await exportLayersToBlob(layersRef.current);
+      const ogBlob = await generateOGImage(
+        bundle.textureManager.getCanvas(),
+        variant,
+      );
+
+      const form = new FormData();
+      form.append('name', meta.name);
+      for (const tag of meta.tags) form.append('tags', tag);
+      form.append('variant', variant);
+      form.append('skinPng', pngBlob, 'skin.png');
+      if (ogBlob !== null) {
+        form.append('ogWebp', ogBlob, 'skin-og.webp');
+      }
+
+      const res = await fetch('/api/skins/publish', {
+        method: 'POST',
+        body: form,
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        let msg = 'Publish failed';
+        try {
+          const data = (await res.json()) as { error?: string };
+          if (typeof data.error === 'string' && data.error.length > 0) {
+            msg = data.error;
+          }
+        } catch {
+          // response wasn't JSON — use the generic message
+        }
+        throw new Error(msg);
+      }
+      const data = (await res.json()) as {
+        skinId: string;
+        permalinkUrl: string;
+        ogImageUrl: string | null;
+      };
+      return {
+        skinId: data.skinId,
+        permalinkUrl:
+          typeof window !== 'undefined'
+            ? `${window.location.origin}${data.permalinkUrl}`
+            : data.permalinkUrl,
+        ogImageUrl: data.ogImageUrl,
+      };
+    },
+    [bundle, variant],
+  );
+
   // M10: h-dvh - 3.5rem leaves 56px (h-14) at the top for the fixed
   // EditorHeader, so the 2D + 3D + sidebar flex layout fits in the
   // remaining viewport.
   return (
-    <div
-      className="flex h-[calc(100dvh-3.5rem)] w-dvw flex-col sm:flex-row"
-      data-first-paint={firstPaintActive ? 'true' : undefined}
-    >
+    <>
+      <EditorHeader onPublishClick={() => setPublishOpen(true)} />
+      <div
+        className="flex h-[calc(100dvh-3.5rem)] w-dvw flex-col sm:flex-row"
+        data-first-paint={firstPaintActive ? 'true' : undefined}
+      >
       <div className="relative h-[30vh] w-full shrink-0 sm:h-full sm:w-auto sm:flex-1">
         <EditorCanvas
           texture={bundle?.textureManager.getTexture() ?? null}
@@ -553,6 +634,14 @@ export function EditorLayout() {
         onClose={() => setExportOpen(false)}
         getLayers={() => layersRef.current}
       />
+
+      {/* M11 Unit 6: publish dialog — lazy-loaded. */}
+      <PublishDialog
+        isOpen={publishOpen}
+        onClose={() => setPublishOpen(false)}
+        onPublish={handlePublish}
+      />
     </div>
+    </>
   );
 }
