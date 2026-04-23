@@ -24,6 +24,7 @@
 
 import 'server-only';
 
+import { createPrivateKey } from 'node:crypto';
 import {
   cert,
   getApps,
@@ -110,11 +111,6 @@ export function getPrivateKeyShape(): {
   let cryptoParseOk = false;
   let cryptoParseError = '';
   try {
-    // Use dynamic require so this module still works in environments
-    // where node:crypto isn't present at import time (it always is on
-    // Vercel Node runtime, but this keeps the diagnostic defensive).
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { createPrivateKey } = require('node:crypto') as typeof import('node:crypto');
     createPrivateKey({ key: normalized, format: 'pem' });
     cryptoParseOk = true;
   } catch (e) {
