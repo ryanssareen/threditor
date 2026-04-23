@@ -303,6 +303,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       await deleteSkinAssets({ uid, skinId }).catch(() => {
         // Best-effort — logged inside deleteSkinAssets.
       });
+      // If the failure is a PEM-decoder error, include a shape-only
+      // diagnostic about FIREBASE_ADMIN_PRIVATE_KEY so the user can see
+      // whether the key is mis-quoted / mis-newlined on Vercel without
+      // digging through logs. Never include the key itself.
+      const isPemDecoderError =
+        message.includes('DECODER') ||
+        message.includes('unsupported') ||
+        message.includes('Too few bytes to read ASN.1') ||
+        message.includes('PEM');
+      let keyShape: ReturnType<typeof import('@/lib/firebase/admin').getPrivateKeyShape> | null = null;
+      if (isPemDecoderError) {
+        try {
+          const { getPrivateKeyShape } = await import('@/lib/firebase/admin');
+          keyShape = getPrivateKeyShape();
+        } catch {
+          // best-effort
+        }
+      }
       const res = NextResponse.json(
         {
           error: 'Publish failed, please retry',
@@ -310,6 +328,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             reason: 'firestore_write_failed',
             firestoreErrorCode: code,
             firestoreErrorMessage: message,
+            ...(keyShape !== null ? { privateKeyShape: keyShape } : {}),
           },
         },
         { status: 500 },

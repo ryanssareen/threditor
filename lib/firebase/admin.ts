@@ -33,19 +33,75 @@ import {
 import { getAuth, type Auth } from 'firebase-admin/auth';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 
+/**
+ * Normalize a PEM private key pulled from an env var.
+ *
+ * Vercel / secret stores mangle multi-line PEMs several ways; OpenSSL 3
+ * (Node 18+) is strict about format and fails with
+ * `error:1E08010C:DECODER routines::unsupported` on the slightest
+ * deviation. We defensively:
+ *   1. Strip surrounding single/double quotes (pasted-with-quotes).
+ *   2. Convert literal `\n` sequences to real newlines.
+ *   3. Normalize CRLF → LF.
+ *   4. Ensure a trailing newline after `-----END PRIVATE KEY-----`.
+ */
+export function normalizePrivateKey(raw: string): string {
+  let key = raw.trim();
+  // Strip a single pair of wrapping quotes if present.
+  if (
+    (key.startsWith('"') && key.endsWith('"')) ||
+    (key.startsWith("'") && key.endsWith("'"))
+  ) {
+    key = key.slice(1, -1);
+  }
+  // Escaped → real newlines.
+  key = key.replace(/\\n/g, '\n');
+  // CRLF → LF.
+  key = key.replace(/\r\n/g, '\n');
+  // Ensure trailing newline (PEM spec).
+  if (!key.endsWith('\n')) key = key + '\n';
+  return key;
+}
+
 function readAdminConfig(): {
   projectId: string;
   clientEmail: string;
   privateKey: string;
 } {
   const raw = process.env.FIREBASE_ADMIN_PRIVATE_KEY ?? '';
-  // Vercel + most secret stores encode PEM newlines as literal \n;
-  // Admin SDK's cert() needs actual newlines in the key body.
-  const privateKey = raw.replace(/\\n/g, '\n');
   return {
     projectId: process.env.FIREBASE_ADMIN_PROJECT_ID ?? '',
     clientEmail: process.env.FIREBASE_ADMIN_CLIENT_EMAIL ?? '',
-    privateKey,
+    privateKey: normalizePrivateKey(raw),
+  };
+}
+
+/**
+ * Returns a shape-only diagnostic about the configured private key —
+ * never includes key material. Safe to return in an error response so
+ * we can diagnose mis-pasted keys without leaking secrets.
+ */
+export function getPrivateKeyShape(): {
+  length: number;
+  hasBeginMarker: boolean;
+  hasEndMarker: boolean;
+  hasRealNewlines: boolean;
+  hasEscapedNewlines: boolean;
+  hasSurroundingQuotes: boolean;
+  endsWithNewline: boolean;
+} {
+  const raw = process.env.FIREBASE_ADMIN_PRIVATE_KEY ?? '';
+  const trimmed = raw.trim();
+  return {
+    length: raw.length,
+    hasBeginMarker: raw.includes('-----BEGIN PRIVATE KEY-----'),
+    hasEndMarker: raw.includes('-----END PRIVATE KEY-----'),
+    hasRealNewlines: raw.includes('\n'),
+    hasEscapedNewlines: raw.includes('\\n'),
+    hasSurroundingQuotes:
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")),
+    endsWithNewline: raw.endsWith('\n'),
   };
 }
 
