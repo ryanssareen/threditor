@@ -538,6 +538,13 @@ export function EditorLayout() {
         } catch {
           // response wasn't JSON — use the generic message
         }
+        // 401 specifically means the session cookie is missing or the
+        // server rejected it (usually because it was minted against a
+        // previous Admin SDK state — e.g., after an env-var rotation).
+        // Give the user a concrete action instead of a cryptic message.
+        if (res.status === 401) {
+          msg = 'Your session expired. Sign out and sign back in, then try again.';
+        }
         throw new Error(msg);
       }
       const data = (await res.json()) as {

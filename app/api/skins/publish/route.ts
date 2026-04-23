@@ -52,7 +52,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // 1. Session.
     const session = await getServerSession();
     if (session === null) {
-      return json({ error: 'Unauthorized' }, 401);
+      // Distinguish "no cookie sent" from "cookie rejected" so the
+      // Vercel log viewer surfaces the useful detail. The
+      // getServerSession helper returns null for both. We probe the
+      // raw cookie header (works on both NextRequest and plain
+      // Request in tests) to log which branch fired.
+      const cookieHeader = req.headers.get('cookie') ?? '';
+      const hasSessionCookie = /(?:^|;\s*)session=/.test(cookieHeader);
+      console.error(
+        `publish: 401 — session ${hasSessionCookie ? 'cookie present but verify failed (likely revoked/expired — user must re-sign-in)' : 'cookie missing from request'}`,
+      );
+      return json({ error: 'Unauthorized — please sign in again' }, 401);
     }
     const uid = session.uid;
 
