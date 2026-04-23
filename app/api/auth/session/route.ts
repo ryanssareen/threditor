@@ -86,11 +86,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         : 'unknown';
     const message =
       err instanceof Error ? err.message : String(err);
+    const truncated = message.slice(0, 300);
     console.error(
-      `session route: auth failed code=${code} message=${message.slice(0, 300)}`,
+      `session route: auth failed code=${code} message=${truncated}`,
     );
+    // TEMPORARY DEBUG (M11 post-deploy triage): include the code +
+    // truncated message in the response body so DevTools Network tab
+    // shows the cause without needing Vercel log access. Revert once
+    // the 401 class is identified and fixed.
     return NextResponse.json(
-      { error: 'Authentication failed' },
+      {
+        error: 'Authentication failed',
+        debug: { code, message: truncated },
+      },
       { status: 401 },
     );
   }
