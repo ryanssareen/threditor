@@ -14,6 +14,10 @@ import { NextResponse } from 'next/server';
 
 import { getAdminFirebase } from '@/lib/firebase/admin';
 
+// Never cache signout responses — they mutate session state.
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
 export async function POST(): Promise<NextResponse> {
   try {
     // Read the cookie from the incoming request. Using the NextRequest

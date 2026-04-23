@@ -20,6 +20,13 @@ import type { NextRequest } from 'next/server';
 
 import { getAdminFirebase } from '@/lib/firebase/admin';
 
+// Never cache this route — it mints a per-request session cookie.
+// Without this, Vercel's edge may treat the response as cacheable
+// (cache-control: public, max-age=0) and strip Set-Cookie headers
+// when serving a cached copy to other users.
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
 const SESSION_DURATION_MS = 60 * 60 * 24 * 5 * 1000; // 5 days
 const REQUIRED_ENV = [
   'FIREBASE_ADMIN_PROJECT_ID',
@@ -66,6 +73,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
 
     const response = NextResponse.json({ success: true });
+    // Force per-user response; never cache a Set-Cookie response at
+    // the edge. "private" prevents shared caches from storing the
+    // response; "no-store" prevents ALL caches (browser + edge).
+    response.headers.set('Cache-Control', 'private, no-store, no-cache, must-revalidate');
     response.cookies.set('session', sessionCookie, {
       maxAge: SESSION_DURATION_MS / 1000, // cookies take seconds
       httpOnly: true,

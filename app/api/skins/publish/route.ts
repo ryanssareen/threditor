@@ -16,6 +16,10 @@ import 'server-only';
  */
 
 export const runtime = 'nodejs';
+// Force per-request handling. Without this Next.js/Vercel may treat
+// the route as cacheable and apply `Cache-Control: public, …`, which
+// can interact badly with session cookies at the edge.
+export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
@@ -44,7 +48,12 @@ type PublishResponse =
   | { error: string };
 
 function json(body: PublishResponse, status: number): NextResponse {
-  return NextResponse.json(body, { status });
+  const res = NextResponse.json(body, { status });
+  res.headers.set(
+    'Cache-Control',
+    'private, no-store, no-cache, must-revalidate',
+  );
+  return res;
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
