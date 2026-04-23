@@ -41,24 +41,37 @@ import { getFirestore, type Firestore } from 'firebase-admin/firestore';
  * (Node 18+) is strict about format and fails with
  * `error:1E08010C:DECODER routines::unsupported` on the slightest
  * deviation. We defensively:
- *   1. Strip surrounding single/double quotes (pasted-with-quotes).
- *   2. Convert literal `\n` sequences to real newlines.
- *   3. Normalize CRLF → LF.
- *   4. Ensure a trailing newline after `-----END PRIVATE KEY-----`.
+ *   1. Escaped → real newlines (done first so JSON fragments parse).
+ *   2. If the value contains a BEGIN/END marker pair, extract only the
+ *      text between them (+ markers) — this tolerates pasting a whole
+ *      service-account JSON or a JSON fragment like `"private_key":
+ *      "-----BEGIN ...-----\n..."` instead of just the key.
+ *   3. Strip a single pair of wrapping quotes.
+ *   4. Normalize CRLF → LF.
+ *   5. Ensure a trailing newline after `-----END PRIVATE KEY-----`.
  */
 export function normalizePrivateKey(raw: string): string {
   let key = raw.trim();
-  // Strip a single pair of wrapping quotes if present.
+  // Escaped → real newlines (run before marker extraction so a
+  // JSON-fragment paste with `\n` escapes is salvageable).
+  key = key.replace(/\\n/g, '\n');
+  key = key.replace(/\r\n/g, '\n');
+  // Extract the PEM block if the value is wrapped in extra content
+  // (e.g., whole JSON service account, JSON fragment with commas/keys).
+  const beginMarker = '-----BEGIN PRIVATE KEY-----';
+  const endMarker = '-----END PRIVATE KEY-----';
+  const beginIdx = key.indexOf(beginMarker);
+  const endIdx = key.indexOf(endMarker);
+  if (beginIdx >= 0 && endIdx > beginIdx) {
+    key = key.slice(beginIdx, endIdx + endMarker.length);
+  }
+  // Strip a single pair of wrapping quotes if still present.
   if (
     (key.startsWith('"') && key.endsWith('"')) ||
     (key.startsWith("'") && key.endsWith("'"))
   ) {
     key = key.slice(1, -1);
   }
-  // Escaped → real newlines.
-  key = key.replace(/\\n/g, '\n');
-  // CRLF → LF.
-  key = key.replace(/\r\n/g, '\n');
   // Ensure trailing newline (PEM spec).
   if (!key.endsWith('\n')) key = key + '\n';
   return key;
