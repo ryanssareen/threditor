@@ -697,3 +697,91 @@
 - `docs/supabase-storage-policies.md` — contains the Firebase-Auth-vs-Supabase-Auth divergence note that shapes how M11's upload flow must work (server route + service-role key, not direct browser upload).
 - `app/_providers/AuthProvider.tsx` — M10's session-cookie route (`app/api/auth/session/route.ts`) must call Admin SDK's `verifySessionCookie` (already exposed via `getAdminFirebase().auth.verifySessionCookie`) and set an httpOnly cookie. The client reads auth state only via the AuthProvider; the cookie is for server-side SSR.
 - `.context/compound-engineering/ce-review/m9-scaffolding-01/run-artifact.md` — residual M9-review findings that need M10/M11 follow-through.
+
+## M10: Auth Flow — 2026-04-23
+
+### What worked
+
+- **Session-cookie pattern as the server-side auth surface.** Client signs in via Firebase SDK (popup / email+password); server verifies the resulting ID token and mints a 5-day httpOnly cookie via `auth.createSessionCookie`. Dual-state: client Firebase `onAuthStateChanged` drives the in-page UI; the cookie drives SSR + server-only writes (M11 upload, M12 like-toggle). `verifySessionCookie(cookie, true)` with `checkRevoked=true` ensures that signing out on another device invalidates this cookie server-side — no stale session survives a `revokeRefreshTokens`.
+- **Handler-inline dynamic imports of `firebase/auth` methods.** AuthDialog's `signInWithPopup`, `signInWithEmailAndPassword`, `createUserWithEmailAndPassword`, `GoogleAuthProvider` and UserMenu's `signOut` are `await import('firebase/auth')` inside their handler bodies rather than top-level imports. This is the right discipline even when the bundler doesn't split further today — `onAuthStateChanged` in AuthProvider already pulls firebase/auth into the /editor chunk, so the static-import version had the same bundle shape. Future tree-shaking improvements or chunk-analyzer runs will benefit automatically.
+- **Separate `cookieStoreMock.get` + `mockAuth` hoisted mocks in route tests.** `vi.hoisted(() => ({...}))` lets the `vi.mock` factory reach the mock state before the source module loads. Cleaner than `vi.doMock` + dynamic imports, cleaner than module-mutation after the fact.
+- **`server-only` import on route handlers + `lib/firebase/auth.ts`.** Reuses the M9 compile-time guard pattern — if any client-bundle path accidentally drags in a route or the server-session helper, the Next build fails loud instead of silently shipping admin-SDK code to the browser.
+- **AuthDialog + UserMenu patterns reuse M7/M8 conventions.** Hand-rolled `role="dialog"` + backdrop click + X button (same shape as `TemplateBottomSheet` and `ExportDialog`); click-outside listener installed only while dropdown is open (same shape as the mirror-toggle and existing UI). Zero new dependencies.
+- **Two-step sign-out (POST /api/auth/signout → firebase `signOut`).** If the server POST rejects, the client signOut still runs so the UI updates. Server revokes refresh tokens so other devices' sessions are also invalidated.
+- **Graceful degradation on AuthProvider init failure.** The `try/catch` added in M9 review still applies — a missing Firebase project env var makes the editor render as signed-out instead of hanging the loading skeleton forever.
+- **`fillCredentials` helper in AuthDialog tests.** React 19 + jsdom don't trigger form `onSubmit` when the form has `required` inputs with empty values. The helper uses the native `HTMLInputElement.prototype.value` setter + `input` event to populate fields in a way React's synthetic onChange sees. Reusable pattern for any test exercising a required-field form.
+
+### What didn't
+
+- **Bundle budget miss.** The plan targeted +15 kB (380 kB cap). Reality: `/editor` First Load JS went from M9's 375 kB to **478 kB (+103 kB)**. The `firebase/auth` modular SDK's popup + credential-signin + signOut + ID-token paths together add ~100 kB gzipped, and Next 15's default chunking treats `firebase/auth` as a unit — dynamic-importing at the AuthDialog/UserMenu level (both via `next/dynamic` component wrapping and `await import()` inside handlers) did not split further because `onAuthStateChanged` in the AuthProvider (root layout) already pulls firebase/auth onto the shared chunk. Not a correctness issue; a budget reality-check. Landing page stays at 106 kB — unchanged — so the cost is scoped to /editor.
+- **`next/dynamic` component wrapping defeats `vi.mock` on the wrapped modules.** A test that mocks `./UserMenu` won't see the mock through a `dynamic(() => import('./UserMenu'))` wrapper because vitest's module-level mocks apply to the import specifier, but `next/dynamic` intercepts via a runtime wrapper. Workaround: mock `next/dynamic` itself, OR skip the component wrapper and use handler-inline `await import()` (which we ultimately did for a different reason — bundle size). Pin: for components with heavy children, inline-dynamic-import inside handlers beats component-level `next/dynamic`.
+- **Plan's `vi.mock` + `global.fetch = vi.fn()` pattern had gaps.** React 19's async `onSubmit` handler requires an explicit `await` on the promise chain after the click, not just `await waitFor`. Without an `await new Promise(r => setTimeout(r, 0))` after clicking Submit, the mock fetch hasn't been called yet. Pattern: after any user-event that triggers async state, yield control with a microtask or macrotask before asserting.
+
+### Invariants discovered
+
+- **Session cookies have three load-bearing flags.** `httpOnly` (JS cannot read → XSS mitigation), `secure` in production (HTTPS-only transport), `sameSite: 'lax'` (CSRF mitigation while permitting top-level nav). Missing any one degrades a security property. The tests assert `HttpOnly` and `SameSite=Lax` on the `Set-Cookie` header. M11 + M12 must never weaken these on new cookies.
+- **Delete uses `resource.data`, create uses `request.resource.data`** — the M9 rules invariant extends into session-cookie handling too. `verifySessionCookie(cookie, checkRevoked=true)` consults the cookie's `authTime` claim against `revokeRefreshTokens`'s server timestamp. Omit `checkRevoked` and a signed-out session survives. This is why `getServerSession` passes `true` — loud about it, so M11 doesn't copy a laxer pattern.
+- **`signOut` is a two-step.** Server revokes refresh tokens (via `/api/auth/signout` POST); client calls `firebase/auth`'s `signOut(auth)` to clear the in-memory User. Both must run. If the server POST fails (network, 500), still run the client `signOut` so UI updates — the stale server session will expire via TTL. Document at the call site; future M13 "sign out all sessions" will build on this.
+- **Firebase Auth's modular SDK is bundled as a unit under Next 15's webpack.** `firebase/auth`'s many exports (onAuthStateChanged, signInWithPopup, signOut, etc.) share enough internal code that webpack's default chunking doesn't split them into separate chunks even when static analysis suggests it could. Any site that imports ANY `firebase/auth` function from a component reachable at first load pays the full ~100 kB cost. Design consequence: all auth-heavy pages share the same First Load JS baseline; there's no way to isolate per-page auth features via dynamic() today.
+- **React 19 + jsdom: `input.value = 'x'` + dispatch `change` does NOT trigger React onChange.** Use the native HTMLInputElement value-property setter descriptor: `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(inputEl, val)` then dispatch `new Event('input', { bubbles: true })`. React's synthetic onChange listens to the native `input` event and only fires when value-set goes through the real setter (not through a plain JS assignment that would shadow React's tracked value).
+- **`required` inputs block form submit when empty.** A jsdom test that clicks a submit button on a form with empty `required` fields silently does nothing — the form validation rejects before the handler runs. Fill the fields first OR remove `required` from the test DOM.
+
+### Gotchas for future milestones
+
+- **M11 (skin upload) bundle baseline is 478 kB now, not 375 kB.** Plan M11 with this number in mind. The upload flow adds Supabase client + Firestore write paths; those are already in /editor from M9. M11's real cost is whatever the upload route itself costs. Keep server-side (`supabase/supabase-js` service-role client) off the critical path.
+- **Session cookie TTL is 5 days; Firebase ID token TTL is 1 hour.** The client's in-memory Firebase token refreshes every hour via `onIdTokenChanged` automatically. The httpOnly session cookie does NOT refresh — after 5 days, the user must sign in again. Document this on the M13 settings page or in a toast if a user's 5-day session is about to expire. Not urgent — 5 days is the Firebase default and matches user expectations for web apps.
+- **`signOut` on one device does NOT immediately invalidate sessions on another device** — only the local one. The `revokeRefreshTokens` call in `/api/auth/signout` ensures other devices can't REFRESH their token (so they get signed out within the hour as their ID token expires). Full cross-device logout within seconds would require push notifications; deferred to post-M14.
+- **Don't `useAuth()` in a server component.** `useAuth()` throws if called outside AuthProvider, AND AuthProvider is a `'use client'` component. Server components must use `getServerSession()` from `lib/firebase/auth.ts` instead. The two APIs are deliberately different to enforce the boundary: useAuth returns a live User with methods; getServerSession returns a serializable `{uid, email, emailVerified}`.
+- **AuthProvider exposes the full Firebase User object.** Documented in AuthProvider.tsx (M10 Unit 6) and M9 COMPOUND §Gotchas. Every M10–M12 consumer legitimately reads from the full set (uid, email, displayName, photoURL). Revisit in M13 when a settings page provides a concrete "this component shouldn't have email in context" use case.
+- **The API routes run in the Node.js runtime (default), not Edge.** `firebase-admin` is a Node-only SDK (uses `crypto.KeyObject`, not WebCrypto). Do NOT add `export const runtime = 'edge'` to any route that imports `@/lib/firebase/admin` — it will fail to build.
+- **`request.json()` is not idempotent.** The session route calls it once; signout calls it zero times (reads cookies only). If a future M11 route needs to parse the body AND fall through to a retry path, read it into a variable first.
+
+### Pinned facts for next milestones
+
+**Exact version deltas from M9:**
+
+- `@testing-library/user-event` `^14.5.0` (new — dev dep).
+- firebase / firebase-admin / @supabase/supabase-js unchanged.
+
+**File paths established:**
+
+- `app/api/auth/session/route.ts` + `app/api/auth/signout/route.ts` — Node-runtime API routes. `server-only` imported.
+- `lib/firebase/auth.ts` — `getServerSession()` + `requireServerSession()`. `server-only` imported.
+- `app/_components/AuthDialog.tsx` — hand-rolled ARIA dialog; Google + Email/Password.
+- `app/_components/UserMenu.tsx` — avatar + dropdown + two-step sign out.
+- `app/_components/EditorHeader.tsx` — fixed top bar, 56px (h-14). Mounts AuthDialog + UserMenu.
+- `app/editor/page.tsx` — now renders `<EditorHeader />` above `<EditorLayout />`.
+- `app/editor/_components/EditorLayout.tsx` — root `h-dvh` → `h-[calc(100dvh-3.5rem)]` to accommodate header.
+- `app/_providers/AuthProvider.tsx` — PII decision comment added (Unit 6).
+- Test artifacts: `app/api/auth/__tests__/session.test.ts`, `lib/firebase/__tests__/auth.test.ts`, `app/_components/__tests__/{AuthDialog,UserMenu,EditorHeader}.test.tsx`.
+
+**Conventions established:**
+
+- Heavy `firebase/auth` methods (popup, credential-signin, signOut) are `await import('firebase/auth')` inside handler functions, not top-level imports.
+- API routes (and any module that reads `FIREBASE_ADMIN_*`) start with `import 'server-only'`.
+- `vi.hoisted` + `vi.mock` with factory is the canonical pattern for mocking `next/headers` + `@/lib/firebase/admin` in route tests.
+- AuthDialog / UserMenu / ExportDialog all use the same hand-rolled ARIA dialog pattern — no `@radix-ui` dependency.
+- Session cookie: `httpOnly=true`, `secure` in production, `sameSite='lax'`, `path='/'`, 5-day TTL.
+
+**Bundle baseline update:**
+
+- `/editor`: 375 → **478 kB** First Load JS (+103 kB). Plan budget was +15 kB — missed. The delta is the full `firebase/auth` module (popup + credential + signOut + ID token paths) which Next 15's webpack can't split below that granularity today.
+- `/` (landing): **106 kB** unchanged.
+- `/api/auth/session` + `/api/auth/signout`: 102 kB each (baseline framework only).
+
+**Test baseline:**
+
+- 579 → **626** tests (+47). Per-unit additions: Unit 1 +12, Unit 2 +9, Unit 3 +12, Unit 4 +9, Unit 5 +5.
+
+**Audit baseline:**
+
+- Production: 0 vulnerabilities (unchanged).
+- firebase-admin transitive vulns (M9-accepted): unchanged — 10 moderate/low, server-only scope.
+
+### Recommended reading for M11
+
+- This file's M10 §Invariants — delete-vs-create, session-cookie flags, two-step sign-out, "don't useAuth in server components" all apply directly to the skin-upload + publish flow.
+- `lib/firebase/auth.ts::getServerSession` — M11's upload route reads the uid from this helper; no parsing cookies manually.
+- `docs/supabase-storage-policies.md` — M11's upload MUST use the service-role key because the Supabase RLS doesn't see Firebase Auth.
+- `app/api/auth/session/route.ts` — pattern for M11's `/api/skins` POST (same Node runtime, same `server-only` + `validateEnv` shape).
+- M10 COMPOUND §Gotchas 1 (bundle baseline is 478 kB now) — plan M11 with that in mind.

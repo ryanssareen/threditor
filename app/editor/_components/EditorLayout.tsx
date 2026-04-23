@@ -478,9 +478,12 @@ export function EditorLayout() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [undoStack, buildActions]);
 
+  // M10: h-dvh - 3.5rem leaves 56px (h-14) at the top for the fixed
+  // EditorHeader, so the 2D + 3D + sidebar flex layout fits in the
+  // remaining viewport.
   return (
     <div
-      className="flex h-dvh w-dvw flex-col sm:flex-row"
+      className="flex h-[calc(100dvh-3.5rem)] w-dvw flex-col sm:flex-row"
       data-first-paint={firstPaintActive ? 'true' : undefined}
     >
       <div className="relative h-[30vh] w-full shrink-0 sm:h-full sm:w-auto sm:flex-1">
