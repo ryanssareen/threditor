@@ -18,7 +18,6 @@
  * server session is left for its 5-day TTL to expire.
  */
 
-import { signOut } from 'firebase/auth';
 import { useEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@/app/_providers/AuthProvider';
@@ -61,6 +60,9 @@ export function UserMenu() {
       console.error('UserMenu: /api/auth/signout failed', err);
     }
     try {
+      // Dynamic import — same rationale as AuthDialog: avoid hoisting
+      // firebase/auth's signOut path into the editor's critical chunk.
+      const { signOut } = await import('firebase/auth');
       const { auth } = getFirebase();
       await signOut(auth);
     } catch (err) {

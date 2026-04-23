@@ -19,13 +19,7 @@
  * error — the UX is "clicking X on Google's popup is not an error".
  */
 
-import {
-  GoogleAuthProvider,
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  type AuthError,
-} from 'firebase/auth';
+import type { AuthError } from 'firebase/auth';
 import { useState } from 'react';
 
 import { getFirebase } from '@/lib/firebase/client';
@@ -92,6 +86,13 @@ export function AuthDialog({ isOpen, onClose }: Props) {
     setState('loading');
     setError('');
     try {
+      // Dynamic import so the popup + Google provider modules are in a
+      // chunk that loads only when the user clicks Sign In — keeps the
+      // editor's critical path lean. (Static import here hoists the
+      // entire firebase/auth module into the /editor shared chunk.)
+      const { signInWithPopup, GoogleAuthProvider } = await import(
+        'firebase/auth'
+      );
       const { auth } = getFirebase();
       const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
@@ -109,6 +110,8 @@ export function AuthDialog({ isOpen, onClose }: Props) {
     setState('loading');
     setError('');
     try {
+      const { signInWithEmailAndPassword, createUserWithEmailAndPassword } =
+        await import('firebase/auth');
       const { auth } = getFirebase();
       const result =
         mode === 'signin'

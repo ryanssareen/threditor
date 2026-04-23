@@ -22,6 +22,7 @@ vi.mock('../UserMenu', () => ({
   UserMenu: () => <div data-testid="user-menu-stub" />,
 }));
 
+
 import { EditorHeader } from '../EditorHeader';
 
 // @ts-expect-error — React 19 act env flag
@@ -51,7 +52,7 @@ describe('EditorHeader', () => {
   const $ = (testid: string): HTMLElement | null =>
     document.querySelector(`[data-testid="${testid}"]`);
 
-  it('shows loading skeleton when auth is pending', () => {
+  it('shows loading skeleton when auth is pending', async () => {
     useAuthMock.mockReturnValue({ user: null, loading: true });
     render();
     expect($('editor-header-loading')).not.toBeNull();
@@ -59,14 +60,14 @@ describe('EditorHeader', () => {
     expect($('user-menu-stub')).toBeNull();
   });
 
-  it('shows Sign In button when signed out', () => {
+  it('shows Sign In button when signed out', async () => {
     useAuthMock.mockReturnValue({ user: null, loading: false });
     render();
     expect($('editor-header-sign-in')).not.toBeNull();
     expect($('user-menu-stub')).toBeNull();
   });
 
-  it('shows UserMenu when signed in', () => {
+  it('shows UserMenu when signed in', async () => {
     useAuthMock.mockReturnValue({
       user: { uid: 'u1', email: 'a@b.c', displayName: 'A', photoURL: null },
       loading: false,
@@ -76,7 +77,7 @@ describe('EditorHeader', () => {
     expect($('editor-header-sign-in')).toBeNull();
   });
 
-  it('Sign In click opens AuthDialog', () => {
+  it('Sign In click opens AuthDialog', async () => {
     useAuthMock.mockReturnValue({ user: null, loading: false });
     render();
     expect($('auth-dialog-stub')).toBeNull();
@@ -86,7 +87,7 @@ describe('EditorHeader', () => {
     expect($('auth-dialog-stub')).not.toBeNull();
   });
 
-  it('home link targets /', () => {
+  it('home link targets /', async () => {
     useAuthMock.mockReturnValue({ user: null, loading: false });
     render();
     expect(

@@ -22,6 +22,12 @@ import { useAuth } from '@/app/_providers/AuthProvider';
 import { AuthDialog } from './AuthDialog';
 import { UserMenu } from './UserMenu';
 
+// AuthDialog and UserMenu are imported statically here. Their heavy
+// firebase/auth dependencies (signInWithPopup, createUser…, signOut)
+// are imported dynamically *inside the handler functions* so they
+// land in code-split chunks that only load when the user clicks Sign
+// In / Sign Out — keeping the editor's critical path lean.
+
 export function EditorHeader() {
   const { user, loading } = useAuth();
   const [showAuthDialog, setShowAuthDialog] = useState(false);
