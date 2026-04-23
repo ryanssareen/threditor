@@ -1,0 +1,64 @@
+// M9 Unit 5: Firestore security rules per DESIGN.md §11.5.
+//
+// Deployment (manual — requires a Firebase project):
+//   firebase login
+//   firebase deploy --only firestore:rules
+//
+// Testing (deferred to an emulator-based CI run):
+//   Install @firebase/rules-unit-testing and run the Firebase Emulator
+//   Suite. Rules logic tests live under tests/firestore-rules.test.ts
+//   once the emulator is wired. M9 ships the rules file; runtime
+//   verification is M10's responsibility (first real auth + write path).
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ── /users/{uid} — public profiles ──────────────────────────────
+    match /users/{uid} {
+      allow read: if true;
+
+      allow create: if isOwner(uid)
+                    && request.resource.data.uid == uid
+                    && request.resource.data.skinCount == 0;
+
+      allow update: if isOwner(uid)
+                    && !('skinCount' in request.resource.data.diff(resource.data).affectedKeys());
+
+      allow delete: if false;
+    }
+
+    // ── /skins/{skinId} — public gallery entries ────────────────────
+    match /skins/{skinId} {
+      allow read: if true;
+
+      allow create: if isSignedIn()
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.likeCount == 0
+                    && request.resource.data.tags.size() <= 8;
+
+      allow update: if isOwner(resource.data.ownerUid)
+                    && !('likeCount' in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('ownerUid' in request.resource.data.diff(resource.data).affectedKeys());
+
+      allow delete: if isOwner(resource.data.ownerUid);
+    }
+
+    // ── /likes/{likeId} — one doc per (skin, user) pair ─────────────
+    match /likes/{likeId} {
+      allow read: if true;
+      allow create, delete: if isSignedIn()
+                            && request.resource.data.uid == request.auth.uid;
+      allow update: if false;
+    }
+  }
+}
