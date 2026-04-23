@@ -61,17 +61,66 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // 1. Session.
     const session = await getServerSession();
     if (session === null) {
-      // Distinguish "no cookie sent" from "cookie rejected" so the
-      // Vercel log viewer surfaces the useful detail. The
-      // getServerSession helper returns null for both. We probe the
-      // raw cookie header (works on both NextRequest and plain
-      // Request in tests) to log which branch fired.
+      // Diagnostic: distinguish "no cookie sent" from "cookie present
+      // but rejected". Include the findings in BOTH the log and the
+      // response body so the user can see the reason in DevTools
+      // Network tab without hunting log aggregators.
       const cookieHeader = req.headers.get('cookie') ?? '';
       const hasSessionCookie = /(?:^|;\s*)session=/.test(cookieHeader);
+      const cookieNames = cookieHeader
+        .split(';')
+        .map((c) => c.trim().split('=')[0])
+        .filter((n) => n.length > 0);
+
+      // Probe the verify failure directly so the response tells the
+      // user WHY the cookie was rejected (revoked, expired, etc.).
+      let verifyErrorCode = 'none';
+      let verifyErrorMessage = '';
+      if (hasSessionCookie) {
+        try {
+          const { auth } = (await import('@/lib/firebase/admin')).getAdminFirebase();
+          const rawSession = cookieHeader
+            .split(';')
+            .map((c) => c.trim())
+            .find((c) => c.startsWith('session='))
+            ?.slice('session='.length) ?? '';
+          await auth.verifySessionCookie(rawSession, true);
+        } catch (verifyErr) {
+          verifyErrorCode =
+            verifyErr !== null && typeof verifyErr === 'object' && 'code' in verifyErr
+              ? String((verifyErr as { code: unknown }).code)
+              : 'unknown';
+          verifyErrorMessage =
+            verifyErr instanceof Error ? verifyErr.message.slice(0, 200) : String(verifyErr).slice(0, 200);
+        }
+      }
+
+      const reason = !hasSessionCookie
+        ? 'cookie_missing_from_request'
+        : `verify_failed_code_${verifyErrorCode}`;
+
       console.error(
-        `publish: 401 — session ${hasSessionCookie ? 'cookie present but verify failed (likely revoked/expired — user must re-sign-in)' : 'cookie missing from request'}`,
+        `publish: 401 reason=${reason} cookieNames=[${cookieNames.join(',')}] verifyMessage=${verifyErrorMessage}`,
       );
-      return json({ error: 'Unauthorized — please sign in again' }, 401);
+
+      const res = NextResponse.json(
+        {
+          error: 'Unauthorized — please sign in again',
+          debug: {
+            reason,
+            hasSessionCookie,
+            cookieNames,
+            verifyErrorCode,
+            verifyErrorMessage,
+          },
+        },
+        { status: 401 },
+      );
+      res.headers.set(
+        'Cache-Control',
+        'private, no-store, no-cache, must-revalidate',
+      );
+      return res;
     }
     const uid = session.uid;
 

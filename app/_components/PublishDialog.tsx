@@ -288,7 +288,7 @@ export function PublishDialog({ isOpen, onClose, onPublish }: Props) {
             <div
               role="alert"
               data-testid="publish-dialog-error"
-              className="mb-4 rounded border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400"
+              className="mb-4 whitespace-pre-wrap break-words rounded border border-red-500/20 bg-red-500/10 p-3 font-mono text-xs text-red-400"
             >
               {error}
             </div>

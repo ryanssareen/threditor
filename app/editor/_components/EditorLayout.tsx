@@ -529,23 +529,28 @@ export function EditorLayout() {
         credentials: 'include',
       });
       if (!res.ok) {
-        let msg = 'Publish failed';
+        let msg = `Publish failed (HTTP ${res.status})`;
+        let debugStr = '';
         try {
-          const data = (await res.json()) as { error?: string };
+          const data = (await res.json()) as {
+            error?: string;
+            debug?: Record<string, unknown>;
+          };
           if (typeof data.error === 'string' && data.error.length > 0) {
             msg = data.error;
+          }
+          if (data.debug !== undefined) {
+            debugStr = JSON.stringify(data.debug);
+            // eslint-disable-next-line no-console
+            console.error('publish debug:', data.debug);
           }
         } catch {
           // response wasn't JSON — use the generic message
         }
-        // 401 specifically means the session cookie is missing or the
-        // server rejected it (usually because it was minted against a
-        // previous Admin SDK state — e.g., after an env-var rotation).
-        // Give the user a concrete action instead of a cryptic message.
-        if (res.status === 401) {
-          msg = 'Your session expired. Sign out and sign back in, then try again.';
-        }
-        throw new Error(msg);
+        // Surface the debug blob in the dialog so the user sees exactly
+        // why the request failed — no DevTools digging required.
+        const fullMsg = debugStr !== '' ? `${msg}\n\n${debugStr}` : msg;
+        throw new Error(fullMsg);
       }
       const data = (await res.json()) as {
         skinId: string;
