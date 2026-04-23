@@ -523,11 +523,77 @@ export function EditorLayout() {
         form.append('ogWebp', ogBlob, 'skin-og.webp');
       }
 
-      const res = await fetch('/api/skins/publish', {
-        method: 'POST',
-        body: form,
-        credentials: 'include',
-      });
+      // Self-healing: if the server rejects with "cookie missing" or
+      // "verify failed" (e.g., session cookie expired/revoked/never-
+      // set), grab a fresh Firebase ID token client-side and re-mint
+      // the session cookie, then retry the publish ONCE.
+      const doPublish = () =>
+        fetch('/api/skins/publish', {
+          method: 'POST',
+          body: form,
+          credentials: 'include',
+        });
+
+      let res = await doPublish();
+      if (res.status === 401) {
+        console.warn(
+          'publish: 401 — re-establishing session cookie and retrying',
+        );
+        try {
+          const [{ getFirebase }] = await Promise.all([
+            import('@/lib/firebase/client'),
+          ]);
+          const { auth } = getFirebase();
+          const user = auth.currentUser;
+          if (user === null) {
+            throw new Error(
+              'You are not signed in. Click Sign In in the top right, then try Publish again.',
+            );
+          }
+          // Force-refresh the ID token so we don't reuse a stale one.
+          const idToken = await user.getIdToken(true);
+          const sessionRes = await fetch('/api/auth/session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken }),
+            credentials: 'include',
+          });
+          if (!sessionRes.ok) {
+            let dbg = '';
+            try {
+              const d = (await sessionRes.json()) as {
+                error?: string;
+                debug?: Record<string, unknown>;
+              };
+              if (d.debug !== undefined) dbg = JSON.stringify(d.debug);
+            } catch {
+              // ignore
+            }
+            throw new Error(
+              `Could not re-establish session (HTTP ${sessionRes.status})${dbg !== '' ? ' — ' + dbg : ''}`,
+            );
+          }
+          // Rebuild the form — FormData is consumed by the first fetch.
+          const retryForm = new FormData();
+          retryForm.append('name', meta.name);
+          for (const tag of meta.tags) retryForm.append('tags', tag);
+          retryForm.append('variant', variant);
+          retryForm.append('skinPng', pngBlob, 'skin.png');
+          if (ogBlob !== null) {
+            retryForm.append('ogWebp', ogBlob, 'skin-og.webp');
+          }
+          res = await fetch('/api/skins/publish', {
+            method: 'POST',
+            body: retryForm,
+            credentials: 'include',
+          });
+        } catch (retryErr) {
+          const msg =
+            retryErr instanceof Error ? retryErr.message : String(retryErr);
+          throw new Error(msg);
+        }
+      }
+
       if (!res.ok) {
         let msg = `Publish failed (HTTP ${res.status})`;
         let debugStr = '';
@@ -541,14 +607,11 @@ export function EditorLayout() {
           }
           if (data.debug !== undefined) {
             debugStr = JSON.stringify(data.debug);
-            // eslint-disable-next-line no-console
             console.error('publish debug:', data.debug);
           }
         } catch {
           // response wasn't JSON — use the generic message
         }
-        // Surface the debug blob in the dialog so the user sees exactly
-        // why the request failed — no DevTools digging required.
         const fullMsg = debugStr !== '' ? `${msg}\n\n${debugStr}` : msg;
         throw new Error(fullMsg);
       }
