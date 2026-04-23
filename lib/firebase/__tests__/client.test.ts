@@ -54,4 +54,14 @@ describe('Firebase Client SDK', () => {
     const { app } = getFirebase();
     expect(app.options.projectId).toBe('threditor-test');
   });
+
+  it('throws a recognizable SDK error when API key env var is missing', async () => {
+    vi.unstubAllEnvs();
+    // Re-stub everything except the API key so the failure path is
+    // specifically "missing / empty apiKey".
+    vi.stubEnv('NEXT_PUBLIC_FIREBASE_PROJECT_ID', 'threditor-test');
+    for (const app of getApps()) await deleteApp(app);
+    __resetFirebaseForTest();
+    expect(() => getFirebase()).toThrow();
+  });
 });

@@ -16,7 +16,17 @@
  * file because the service-role key is a secret.
  */
 
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import {
+  createClient,
+  type SupabaseClient,
+} from '@supabase/supabase-js';
+
+/**
+ * `StorageFileApi` is not publicly exported from @supabase/storage-js,
+ * so derive the return-type from the actual call signature. This
+ * stays accurate across minor version bumps of the package.
+ */
+type StorageBucket = ReturnType<SupabaseClient['storage']['from']>;
 
 let client: SupabaseClient | null = null;
 
@@ -34,7 +44,7 @@ export function getSupabase(): SupabaseClient {
  * Convenience accessor for the skin-upload bucket. Centralized so the
  * bucket name (env-configurable) is read in one place.
  */
-export function getStorageBucket() {
+export function getStorageBucket(): StorageBucket {
   const bucketName = process.env.SUPABASE_BUCKET_NAME ?? 'skins';
   return getSupabase().storage.from(bucketName);
 }

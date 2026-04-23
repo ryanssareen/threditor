@@ -76,4 +76,31 @@ describe('Firebase Admin SDK', () => {
     expect(STUB_PRIVATE_KEY).not.toContain('\\n');
     expect(STUB_PRIVATE_KEY).toContain('\n');
   });
+
+  it('is idempotent on a private key that already has real newlines', async () => {
+    // Vercel's \\n encoding is the common case, but a teammate might
+    // paste a raw multi-line PEM into .env.local. The replace must
+    // be a no-op in that case so init still succeeds.
+    vi.stubEnv('FIREBASE_ADMIN_PRIVATE_KEY', STUB_PRIVATE_KEY);
+    const { getAdminFirebase } = await import('../admin');
+    const { app } = getAdminFirebase();
+    expect(app).toBeDefined();
+  });
+
+  it('throws a recognizable SDK error when private key env var is missing', async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('FIREBASE_ADMIN_PROJECT_ID', 'threditor-test');
+    vi.stubEnv(
+      'FIREBASE_ADMIN_CLIENT_EMAIL',
+      'firebase-adminsdk@threditor-test.iam.gserviceaccount.com',
+    );
+    // PRIVATE_KEY intentionally unstubbed → empty string.
+    const { deleteApp, getApps } = await import('firebase-admin/app');
+    for (const existing of getApps()) {
+      await deleteApp(existing);
+    }
+    const { __resetAdminFirebaseForTest, getAdminFirebase } = await import('../admin');
+    __resetAdminFirebaseForTest();
+    expect(() => getAdminFirebase()).toThrow();
+  });
 });

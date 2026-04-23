@@ -7,6 +7,15 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': projectRoot,
+      // M9: `import 'server-only'` is a Next.js build-time guard that
+      // throws in non-server-component contexts. Tests aren't server
+      // components; alias to the package's own empty shim (which
+      // isn't reachable via the package.json exports field, so point
+      // at the file directly) so admin SDK tests can import admin.ts.
+      'server-only': new URL(
+        './node_modules/server-only/empty.js',
+        import.meta.url,
+      ).pathname,
     },
   },
   // Use React 17+ automatic JSX runtime so .tsx files that don't

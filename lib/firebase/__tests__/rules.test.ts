@@ -49,11 +49,20 @@ describe('firestore.rules — shape + policy sanity', () => {
     );
   });
 
-  it('likes collection: public read, create/delete require auth.uid match, no updates allowed', () => {
+  it('likes collection: public read, create + delete gated on auth.uid, doc-id convention enforced on create, no updates allowed', () => {
     expect(rules).toMatch(/match \/likes\/{likeId}[^}]*allow read: if true/s);
+    // Create: uid match + doc-id convention `${skinId}_${uid}`.
     expect(rules).toMatch(
-      /match \/likes\/{likeId}[^}]*allow create, delete:[\s\S]*request\.auth\.uid/s,
+      /match \/likes\/{likeId}[\s\S]*allow create:[\s\S]*request\.resource\.data\.uid == request\.auth\.uid/s,
     );
-    expect(rules).toMatch(/match \/likes\/{likeId}[^}]*allow update: if false/s);
+    expect(rules).toMatch(
+      /match \/likes\/{likeId}[\s\S]*likeId == request\.resource\.data\.skinId \+ '_' \+ request\.auth\.uid/s,
+    );
+    // Delete: separate rule checks resource.data (existing doc), not
+    // request.resource (null on delete).
+    expect(rules).toMatch(
+      /match \/likes\/{likeId}[\s\S]*allow delete:[\s\S]*resource\.data\.uid == request\.auth\.uid/s,
+    );
+    expect(rules).toMatch(/match \/likes\/{likeId}[\s\S]*allow update: if false/s);
   });
 });

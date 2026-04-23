@@ -46,4 +46,10 @@ describe('Supabase Client SDK', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((bucket as any).bucketId).toBe('private-bucket');
   });
+
+  it('throws a recognizable SDK error when URL env var is missing', () => {
+    vi.unstubAllEnvs();
+    __resetSupabaseForTest();
+    expect(() => getSupabase()).toThrow();
+  });
 });

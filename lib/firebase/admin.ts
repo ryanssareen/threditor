@@ -6,6 +6,11 @@
  * runtime, or any browser-bundle path. Admin SDK requires Node.js
  * APIs and the service-account private key.
  *
+ * The `import 'server-only'` below is the compile-time guard: any
+ * client-bundle path that transitively imports this file fails the
+ * Next.js build. Adding the guard at scaffolding time (before any
+ * consumer exists) avoids relying on future reviewers to catch it.
+ *
  * Env vars (NOT NEXT_PUBLIC_ prefixed):
  *   - FIREBASE_ADMIN_PROJECT_ID
  *   - FIREBASE_ADMIN_CLIENT_EMAIL
@@ -16,6 +21,8 @@
  * with escaped newlines; the Admin SDK's `cert()` needs real newlines
  * in the PEM body.
  */
+
+import 'server-only';
 
 import {
   cert,
@@ -51,7 +58,7 @@ export function getAdminFirebase(): { app: App; auth: Auth; db: Firestore } {
     const existing = getApps();
     app =
       existing.length > 0
-        ? (existing[0] as App)
+        ? existing[0]
         : initializeApp({ credential: cert(readAdminConfig()) });
   }
   if (adminAuth === null) adminAuth = getAuth(app);

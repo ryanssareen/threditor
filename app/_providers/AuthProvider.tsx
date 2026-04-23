@@ -45,12 +45,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const { auth } = getFirebase();
-    const unsubscribe = onAuthStateChanged(auth, (next) => {
-      setUser(next);
+    // Init + subscribe wrapped in try so a misconfigured Firebase
+    // project (missing env var, malformed apiKey, etc.) degrades to
+    // "signed-out" instead of hanging the UI on `loading: true`
+    // forever. onAuthStateChanged itself does not throw in normal
+    // flows; getFirebase() throws on bad config.
+    let unsubscribe: (() => void) | undefined;
+    try {
+      const { auth } = getFirebase();
+      unsubscribe = onAuthStateChanged(auth, (next) => {
+        setUser(next);
+        setLoading(false);
+      });
+    } catch (err) {
+      console.error('AuthProvider: Firebase init failed — app will render as signed-out.', err);
+      setUser(null);
       setLoading(false);
-    });
-    return unsubscribe;
+    }
+    return () => {
+      unsubscribe?.();
+    };
   }, []);
 
   return (
