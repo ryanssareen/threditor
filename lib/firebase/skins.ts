@@ -98,10 +98,28 @@ export async function createSkinDoc(
   // Check if the user doc already exists so we only bootstrap the
   // profile on first publish. One extra read per publish — acceptable
   // cost (< 1 ms) to keep the createdAt invariant stable.
+  //
+  // M13: bootstrap `username` from the SAME value we denormalise onto
+  // /skins/{id}.ownerUsername. Previously these drifted (username was
+  // always `user-<hash>` from defaultUsername while ownerUsername came
+  // from the email prefix), which broke the /u/[username] lookup —
+  // the gallery linked to `/u/ryansareen` but the users collection only
+  // had a doc under `user-abc...`. If the incoming `ownerUsername`
+  // doesn't validate against USERNAME_PATTERN (e.g. has uppercase, a
+  // dot, or is too short/long), we fall back to `defaultUsername(uid)`
+  // so the invariant "/users/{uid}.username matches USERNAME_PATTERN"
+  // is never violated. The skin doc keeps whatever `ownerUsername` it
+  // was handed; if that drifts from the canonical username after a
+  // future rename, we take the stale display on cards but the /u/...
+  // URL always resolves.
   const existing = await userRef.get();
   if (!existing.exists) {
-    userPayload.username = defaultUsername(input.uid);
-    userPayload.displayName = defaultUsername(input.uid);
+    const lowerOwner = input.ownerUsername.toLowerCase();
+    const canonicalUsername = /^[a-z0-9_-]{3,30}$/.test(lowerOwner)
+      ? lowerOwner
+      : defaultUsername(input.uid);
+    userPayload.username = canonicalUsername;
+    userPayload.displayName = input.ownerUsername;
     userPayload.photoURL = null;
     userPayload.createdAt = now;
   }

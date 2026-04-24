@@ -1,11 +1,19 @@
 {
-  "__comment": "M12 Unit 0: composite index for the /gallery popular-sort query (orderBy likeCount desc, createdAt desc). Single-field descending indexes on createdAt + likeCount are auto-created by Firestore. Tag filtering is client-side per M12 constraint #4, so no (tags, createdAt) index is needed.",
+  "__comment": "M12: (likeCount DESC, createdAt DESC) for /gallery popular sort. M13: (ownerUid ASC, createdAt DESC) for /u/[username] profile skins query. Single-field descending indexes on createdAt + likeCount + ownerUid are auto-created by Firestore. Tag filtering is client-side (M12 constraint), so no (tags, createdAt) index is needed.",
   "indexes": [
     {
       "collectionGroup": "skins",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "likeCount", "order": "DESCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "skins",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "ownerUid", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     }

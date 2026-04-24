@@ -149,7 +149,15 @@ export function SkinCard({
               {skin.name}
             </Link>
             <p className="truncate text-xs text-text-secondary">
-              by {skin.ownerUsername}
+              by{' '}
+              <Link
+                href={`/u/${skin.ownerUsername}`}
+                prefetch={false}
+                data-testid={`skin-card-owner-${skin.id}`}
+                className="hover:text-accent hover:underline"
+              >
+                {skin.ownerUsername}
+              </Link>
             </p>
           </div>
 

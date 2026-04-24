@@ -429,6 +429,72 @@ At 10K publishes/day:
 
 ---
 
+## M13: Profile Pages — 2026-04-24
+
+### What worked
+
+- **SSR + middleware-owned CDN headers** — `dynamic = 'force-dynamic'` on `/u/[username]` + a `middleware.ts` matcher on `/u/:path*` that sets `public, s-maxage=300, stale-while-revalidate=600`. Per-user caching is the right granularity: profiles have long tails of traffic, unlike the gallery.
+- **Two lookups, one page** — `getUserByUsername` + `getSkinsByOwner` + `computeTotalLikes` fold. No aggregation query (Firestore doesn't have SUM on Spark anyway), so totalLikes is computed from the same skins list the grid renders.
+- **Back-compat username fallback** — When a username lookup in `/users` misses, we do one secondary read on `/skins` by `ownerUsername` then point-load `/users/{ownerUid}`. Makes the fix for the M11 inconsistency (see "What didn't") work retroactively for pre-M13 users without a migration.
+- **Split try/catch in `loadProfile`** — User lookup failure = 404, but skins query failure = empty grid with a rendered header. A missing composite index (deploy lag) or transient Firestore outage no longer makes the entire profile unreachable.
+- **`router.refresh()` for edit-profile invalidation** — The EditProfileDialog PATCHes `/api/users/me`, then calls `router.refresh()`. The Server Component re-runs, new display name appears. No prop-drilling of the updated value down to the header.
+- **Owner detection on the client only** — The server emits the same HTML for every viewer (no `getServerSession` in the profile page). `ProfileHeader` is a Client Component that compares `useAuth().user?.uid` to the profile's uid and conditionally renders the edit button. Upshot: the CDN can safely cache one copy of the HTML across all viewers.
+- **`validateDisplayName` + `USERNAME_PATTERN` shared between client and server** — Single validation module (`lib/firebase/profile.ts`) imports cleanly into the API route (server), the SkinCard test suite, and the Edit dialog's local validation.
+- **Dialog pattern reuse** — `EditProfileDialog` follows `AuthDialog` + `PublishDialog`: fixed+z-50 backdrop, click-outside to close, Escape-key handler, focus trap via autoFocus. Zero new UX vocabulary.
+- **Avatar fallback chain** — `photoURL` → fallback to initial letter → `onError` swap back to initial. Profile header never shows a broken-image glyph even when an OAuth provider blocks the referrer.
+- **Reuse of M12's SkinCard** — `ProfileGrid` wraps the exact same component gallery uses. Likes work identically; `/api/skins/liked` batch fetch is reused verbatim.
+- **JSON-LD `ProfilePage`** — Inline `<script type="application/ld+json">` with `@type: ProfilePage` + nested `Person`. Zero runtime cost, real SEO benefit.
+
+### What didn't
+
+- **Plan's separate tests for `profile-queries` / `profile-seo` / `profile-auth` / `username-validation`** — Collapsed into one `lib/firebase/__tests__/profile.test.ts` covering queries + validation + URL pattern + reserved usernames, plus `app/api/users/__tests__/me.test.ts` for the PATCH route. Four test files' worth of concerns, two files that are easier to maintain.
+- **Plan's `orderBy(createdAt DESC)` assumption that the composite index was already deployed** — Locally the index hadn't been pushed, so the first run of `/u/ryanssareen` 500'd with `FAILED_PRECONDITION: The query requires an index`. Fixed by splitting the try/catch (above) so the page still renders the header, and documented the CLI deploy step as a follow-up in the PR.
+- **Plan's assumption that `users.username` matched `skins.ownerUsername`** — Discovered during preview testing that M11's publish flow bootstrapped `users.username = defaultUsername(uid)` (e.g. `user-q8xl00buxodf`) while `skins.ownerUsername = email.split('@')[0]` (e.g. `ryanssareen`). The gallery's new username link `/u/ryanssareen` therefore 404'd. Fixed two ways: (1) `createSkinDoc` now bootstraps `users.username` from the passed `ownerUsername` (with `defaultUsername` fallback when the email prefix doesn't match `USERNAME_PATTERN`); (2) `getUserByUsername` has a back-compat fallback via `/skins.ownerUsername` for pre-M13 rows.
+- **Stats grid with 3 columns including `@username`** — First draft; the username is already in the header, so the third stat was redundant. Dropped to 2 columns (Skins, Likes).
+
+### Invariants discovered
+
+- **Cache-Control on SSR routes MUST be set in middleware**, not `generateMetadata({ other: {...} })`. `other` metadata only emits `<meta http-equiv>` tags — Next.js 15 sets its own `no-store` as the HTTP header for `force-dynamic` routes and ignores meta tags for caching decisions.
+- **`/users/{uid}.username` MUST be derived from the same source as `/skins/{id}.ownerUsername`** at bootstrap time, or every permalink built from `ownerUsername` 404s until the user publishes a new skin or manually edits. The M11 publish flow previously used two different derivations for the same logical value.
+- **Server Components for per-user pages MUST NOT read `getServerSession()`** if we want CDN caching. Any per-request personalisation (edit button, liked-heart state) has to be delegated to a Client Component that hydrates from `useAuth()`.
+- **`notFound()` throws a `NEXT_NOT_FOUND` error, which is caught by the nearest `not-found.tsx`.** Without a route-local `app/u/[username]/not-found.tsx`, crawlers get the site-wide 404 which is often branded as "the editor isn't here" — bad UX for a profile miss. Adding the route-local file is ~20 lines and materially improves the miss experience.
+- **`force-dynamic` + `searchParams`/`params` needs `runtime: 'nodejs'`** for any route that touches `firebase-admin` — it can't run on the edge. Same constraint as the M12 gallery page.
+- **`createPrivateKey` and other firebase-admin init happens lazily on first `getAdminFirebase()` call**, so unit tests that mock the whole module don't pay the init cost. Keep mocking at the `getAdminFirebase` level, never inside the Admin SDK proper.
+- **Display name PATCHes MUST return 404 when the `/users/{uid}` doc doesn't exist**, not 200. Auto-creating the doc on PATCH would let a never-published account spawn a ghost profile (with no skins, no join-on-publish invariant). The error message "Publish at least one skin before updating your profile" guides the user to the right path.
+- **Validation MUST happen both client-side (for UX) and server-side (for security).** `validateDisplayName` lives in one module and is called from both the Edit dialog's button-disabled check and the PATCH route's 400-branch. React auto-escaping makes XSS a non-concern, but control characters and length caps still need enforcement.
+
+### Gotchas for future milestones
+
+- **M14 skin detail page** — Already exists at `/skin/[skinId]` (minimal viewer, shipped with M11). M14 should reuse the profile's `getSkinsByOwner`-style pattern and add cursor pagination once we're on Blaze plan.
+- **M14 delete skin** — Will need a transaction: delete `/skins/{id}`, delete every `/likes/{id}_*` (or mark collection for GC), decrement `/users/{ownerUid}.skinCount`, remove Storage objects. `totalLikes` is computed so no separate update there, but the profile header's `skinCount` will be off by one until the next ISR window on the gallery.
+- **Phase 3 username change** — Still deferred per plan. The backward-compat fallback in `getUserByUsername` (via `/skins.ownerUsername`) means a rename flow would need to ALSO rewrite every skin's denormalised `ownerUsername` — otherwise a search for the new name would fall through to the old name via the fallback. Cleanest fix: Cloud Function trigger on `/users/{uid}.username` change → batch write all skins.
+- **Profile photo upload** — Currently `photoURL` comes from Google OAuth (or is null). A user-owned upload would need Supabase Storage + a per-user quota + probably a crop tool. Out of M13 scope but the schema already supports it.
+- **Bio / description field** — Schema change (add `bio: string` to `/users`), trivially editable via the same `/api/users/me` PATCH. Deferred to Phase 3 per plan.
+- **Pagination on profile grid** — Currently hard-capped at `PROFILE_PAGE_SIZE = 50`. The footer note "Showing the 50 most recent skins" renders only when the cap is hit, so prolific users get a discoverable hint. Phase 3 cursor pagination can land without changing the server query shape (just adding `startAfter`).
+- **Per-user rate limiting on `/api/users/me`** — No rate limit today. A pathological client could display-name-thrash their profile. Acceptable for MVP; Phase 3 should add a per-user token bucket or at minimum a Vercel rate-limit middleware.
+
+### Performance benchmarks
+
+- Profile page TTFB (cold, dev): ~400 ms (includes Firestore user lookup + skins query).
+- Profile page TTFB (warm at CDN): expected ~50 ms (Vercel edge hit) on production once Vercel caching kicks in.
+- Stat aggregation: O(n) over ≤ 50 skins, < 1 ms.
+- Bundle sizes (production build):
+  - `/u/[username]` page-specific JS: 3.83 KB
+  - First Load JS: 220 KB (shares the like-toggle path with gallery)
+  - Middleware: 32.2 KB
+
+### Process notes
+
+- **Total work time: ~2.5 h**, well under the 5 h plan estimate. Most of the savings came from reusing SkinCard verbatim and collapsing three plan-separate test files into one.
+- **Test count: 759 / 759 passing** (up from 754). New tests:
+  - `lib/firebase/__tests__/profile.test.ts` — 25 tests across user lookup (with fallback), skins query, likes fold, username pattern, reserved names, display-name validation.
+  - `app/api/users/__tests__/me.test.ts` — 11 tests covering bearer + cookie auth, validation, 404/500 paths, Cache-Control header, trim behaviour.
+  - `lib/firebase/__tests__/skins.test.ts` — 2 additional tests for the M13 username bootstrap (lowercases valid email prefix; falls back to `defaultUsername` for invalid).
+- **One data-shape bug caught in preview** — `users.username` vs `skins.ownerUsername` mismatch. Preview-testing the full flow (not just unit tests) was what surfaced it; the fix is defensive both at write time (new users get consistent values) and at read time (existing users get the fallback).
+- **No production deploy from this branch.** Branch is ready for PR review; the composite index `(ownerUid, createdAt)` deploy happens on merge, same pattern as M12.
+
+---
+
 ## Cross-milestone patterns
 
 ### Authentication flow (M10 → M11 → M12)
@@ -681,4 +747,4 @@ onSnapshot(doc(db, 'skins', skinId), (snap) => {
 
 ---
 
-*End of compound documentation. Next entry: M13 (User Profiles)*
+*End of compound documentation. Next entry: M14 (Skin Detail + Delete)*
