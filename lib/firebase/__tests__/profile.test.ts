@@ -165,9 +165,11 @@ describe('getUserByUsername', () => {
     expect(user?.skinCount).toBe(0);
   });
 
-  it('back-compat: when /users has no match, resolves via /skins.ownerUsername → /users/{ownerUid}', async () => {
-    // Pre-M13 data: user doc has `username: user-abc` but skins have
-    // `ownerUsername: alice`.
+  it('back-compat: when /users has no match, resolves via /skins.ownerUsername → /users/{ownerUid} for pre-M13 `user-<slug>` shape', async () => {
+    // Pre-M13 data: user doc has `username: user-abc` (default
+    // bootstrap) but skins have `ownerUsername: alice` (email prefix).
+    // The `user-` prefix lets the reverse-check accept this row as
+    // "owns the slug, hasn't been renamed yet".
     mockQueryResults.users = [];
     mockQueryResults.skins = [
       {
@@ -225,6 +227,68 @@ describe('getUserByUsername', () => {
     ];
     const user = await getUserByUsername('alice');
     expect(user).toBeNull();
+  });
+
+  it('reverse-check: fallback returns null when the resolved user has RENAMED away from the stale slug', async () => {
+    // Pre-M13 shape was /users.username = user-<slug>. If that user
+    // has since renamed to a real username (`bob`), a lookup for the
+    // stale `alice` slug must NOT route to Bob. The direct query is
+    // authoritative; stale skins can't re-claim a slug Bob didn't pick.
+    mockQueryResults.users = [];
+    mockQueryResults.skins = [
+      {
+        id: 'skin-1',
+        data: () => ({
+          ownerUid: 'uid-bob',
+          ownerUsername: 'alice',
+          name: 'X',
+          storageUrl: 'https://stub/png',
+          createdAt: ts(0),
+        }),
+      },
+    ];
+    mockDocPointLookups['users/uid-bob'] = {
+      exists: true,
+      data: () => ({
+        uid: 'uid-bob',
+        username: 'bob',
+        displayName: 'Bob',
+        createdAt: ts(1_000),
+      }),
+    };
+    const user = await getUserByUsername('alice');
+    expect(user).toBeNull();
+  });
+
+  it('reverse-check: fallback accepts a direct-match user (rare race between index + direct query)', async () => {
+    // Defence in depth: if the user's current username already equals
+    // the requested slug, accept even though we reached the fallback
+    // (this can happen during Firestore index propagation windows).
+    mockQueryResults.users = [];
+    mockQueryResults.skins = [
+      {
+        id: 'skin-1',
+        data: () => ({
+          ownerUid: 'uid-alice',
+          ownerUsername: 'alice',
+          name: 'X',
+          storageUrl: 'https://stub/png',
+          createdAt: ts(0),
+        }),
+      },
+    ];
+    mockDocPointLookups['users/uid-alice'] = {
+      exists: true,
+      data: () => ({
+        uid: 'uid-alice',
+        username: 'alice',
+        displayName: 'Alice',
+        createdAt: ts(1_000),
+      }),
+    };
+    const user = await getUserByUsername('alice');
+    expect(user).not.toBeNull();
+    expect(user?.uid).toBe('uid-alice');
   });
 });
 

@@ -83,17 +83,26 @@ function normalizeUser(raw: RawUser): ProfileUser | null {
  * `ownerUsername`. The gallery now links to `/u/{ownerUsername}`, so a
  * direct username lookup would miss for any pre-M13 user. On miss we
  * do ONE secondary read: find a skin doc with that `ownerUsername`,
- * take its `ownerUid`, and point-load the user doc. The result is
- * correct in both worlds and costs at most 2 extra reads on the slow
- * path (never on the hot path).
+ * take its `ownerUid`, and point-load the user doc.
+ *
+ * Reverse-check (security): after the fallback resolves a user doc,
+ * we require its current `/users.username` to match the requested
+ * slug (either directly, or via the pre-M13 `user-<uidslug>` shape
+ * that still "owns" this ownerUsername because nobody has migrated
+ * yet). Without this check a user who publishes a skin with
+ * `ownerUsername === "alice"` (e.g. by registering alice@gmail.com
+ * before the real alice shows up) could hijack `/u/alice` even after
+ * the real alice claims the slug via a username change. Post-rename,
+ * the stale `/skins.ownerUsername` must no longer route `/u/...`
+ * lookups — the direct `/users.username` query is authoritative.
  *
  * Cost: 1 read on the common path; up to 3 reads on the fallback path.
  */
 export async function getUserByUsername(
   username: string,
 ): Promise<ProfileUser | null> {
-  if (!USERNAME_PATTERN.test(username.toLowerCase())) return null;
   const lower = username.toLowerCase();
+  if (!USERNAME_PATTERN.test(lower)) return null;
   const { db } = getAdminFirebase();
 
   const direct = await db
@@ -117,7 +126,19 @@ export async function getUserByUsername(
   if (typeof ownerUid !== 'string') return null;
   const userSnap = await db.collection('users').doc(ownerUid).get();
   if (!userSnap.exists) return null;
-  return normalizeUser(userSnap.data() as RawUser);
+  const profile = normalizeUser(userSnap.data() as RawUser);
+  if (profile === null) return null;
+
+  // Reverse-check. The fallback is for pre-M13 users whose `username`
+  // is `defaultUsername(uid)` (shape: `user-<slug>`). We accept that
+  // shape as "owns the slug" because nothing has migrated yet. If the
+  // user has since renamed to a real username that doesn't match the
+  // requested slug, reject — the direct query above is the canonical
+  // authority for post-rename state, and reaching this branch after
+  // a rename means the requested slug is stale.
+  if (profile.username === lower) return profile;
+  if (profile.username.startsWith('user-')) return profile;
+  return null;
 }
 
 /**

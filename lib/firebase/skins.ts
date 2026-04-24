@@ -23,6 +23,7 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 
 import { getAdminFirebase } from './admin';
+import { USERNAME_PATTERN } from './profile';
 
 export type CreateSkinInput = {
   skinId: string;
@@ -115,7 +116,7 @@ export async function createSkinDoc(
   const existing = await userRef.get();
   if (!existing.exists) {
     const lowerOwner = input.ownerUsername.toLowerCase();
-    const canonicalUsername = /^[a-z0-9_-]{3,30}$/.test(lowerOwner)
+    const canonicalUsername = USERNAME_PATTERN.test(lowerOwner)
       ? lowerOwner
       : defaultUsername(input.uid);
     userPayload.username = canonicalUsername;
