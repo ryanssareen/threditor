@@ -3,9 +3,15 @@ import 'server-only';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { cache } from 'react';
 
 import { getAdminFirebase } from '@/lib/firebase/admin';
+import { buildSkinMetadata, type SkinForMetadata } from '@/lib/seo/skin-metadata';
+import { buildSkinJsonLd, serializeJsonLd } from '@/lib/seo/skin-jsonld';
+import { buildSkinShareText } from '@/lib/seo/share-text';
+import { skinPermalink } from '@/lib/seo/site';
 
+import { ShareButton } from './_components/ShareButton';
 import { SkinDetailPreview } from './_components/SkinDetailPreview';
 
 export const runtime = 'nodejs';
@@ -13,53 +19,79 @@ export const dynamic = 'force-dynamic';
 
 type Props = { params: Promise<{ skinId: string }> };
 
-type SkinDoc = {
-  id: string;
-  ownerUid: string;
-  ownerUsername: string;
-  name: string;
-  variant: 'classic' | 'slim';
-  storageUrl: string;
-  thumbnailUrl: string;
-  ogImageUrl: string | null;
-  tags: string[];
-  likeCount: number;
-  createdAt: { toDate?: () => Date } | null;
-};
+type LoadedSkin = SkinForMetadata;
 
-async function loadSkin(skinId: string): Promise<SkinDoc | null> {
+/**
+ * M14: `loadSkin` is wrapped in React `cache()` so `generateMetadata()`
+ * and the page body share one Firestore read per request. Without the
+ * dedup wrapper the route fires two reads per pageview, halving the
+ * Spark-plan ceiling for this page.
+ *
+ * The loader normalises the Firestore document into the plain-POJO
+ * `SkinForMetadata` shape so the metadata builder stays pure (no
+ * Firestore Timestamp / class instance at the boundary).
+ */
+const loadSkin = cache(async (skinId: string): Promise<LoadedSkin | null> => {
   if (!/^[a-f0-9-]{10,64}$/i.test(skinId)) return null;
   try {
     const { db } = getAdminFirebase();
     const snap = await db.collection('skins').doc(skinId).get();
     if (!snap.exists) return null;
-    return snap.data() as SkinDoc;
+    const raw = snap.data();
+    if (raw === undefined) return null;
+
+    const tsField = raw.createdAt as { toDate?: () => Date } | null | undefined;
+    const createdAtMs =
+      tsField !== null &&
+      tsField !== undefined &&
+      typeof tsField.toDate === 'function'
+        ? tsField.toDate().getTime()
+        : null;
+
+    const thumbnailUrl =
+      typeof raw.thumbnailUrl === 'string' && raw.thumbnailUrl.length > 0
+        ? raw.thumbnailUrl
+        : null;
+    const ogImageUrl =
+      typeof raw.ogImageUrl === 'string' && raw.ogImageUrl.length > 0
+        ? raw.ogImageUrl
+        : null;
+    const tags = Array.isArray(raw.tags)
+      ? (raw.tags.filter(
+          (t: unknown): t is string => typeof t === 'string',
+        ) as string[])
+      : [];
+    const variant: 'classic' | 'slim' =
+      raw.variant === 'slim' ? 'slim' : 'classic';
+
+    return {
+      id: skinId,
+      name: typeof raw.name === 'string' ? raw.name : '',
+      ownerUsername:
+        typeof raw.ownerUsername === 'string' ? raw.ownerUsername : '',
+      variant,
+      storageUrl: typeof raw.storageUrl === 'string' ? raw.storageUrl : '',
+      thumbnailUrl,
+      ogImageUrl,
+      tags,
+      likeCount: typeof raw.likeCount === 'number' ? raw.likeCount : 0,
+      createdAtMs,
+    };
   } catch {
     return null;
   }
-}
+});
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { skinId } = await params;
   const skin = await loadSkin(skinId);
   if (skin === null) {
-    return { title: 'Skin not found · Threditor' };
+    return {
+      title: 'Skin not found · Threditor',
+      robots: { index: false, follow: false },
+    };
   }
-  const title = `${skin.name} by ${skin.ownerUsername} · Threditor`;
-  const ogImage = skin.ogImageUrl ?? skin.storageUrl;
-  return {
-    title,
-    description: `Minecraft skin by ${skin.ownerUsername}`,
-    openGraph: {
-      title,
-      images: [{ url: ogImage }],
-    },
-    twitter: {
-      card: 'summary_large_image',
-      title,
-      images: [ogImage],
-    },
-  };
+  return buildSkinMetadata(skin, { shareUrl: skinPermalink(skin.id) });
 }
 
 export default async function SkinPage({ params }: Props) {
@@ -67,13 +99,22 @@ export default async function SkinPage({ params }: Props) {
   const skin = await loadSkin(skinId);
   if (skin === null) notFound();
 
-  const createdAtMs =
-    skin.createdAt !== null && typeof skin.createdAt?.toDate === 'function'
-      ? skin.createdAt.toDate().getTime()
-      : null;
+  const createdAtMs = skin.createdAtMs;
+  const jsonLd = buildSkinJsonLd(skin);
+  const shareUrl = skinPermalink(skin.id);
+  const shareText = buildSkinShareText(skin);
 
   return (
     <main className="min-h-screen bg-canvas px-6 py-12 text-text-primary">
+      <script
+        type="application/ld+json"
+        data-testid="skin-jsonld"
+        // JSON content is server-controlled (fields come from Firestore
+        // docs we write) but a malicious skin name could contain
+        // `</script>` — serializeJsonLd escapes every `<` to `\u003c`
+        // so the HTML tokenizer can't be fooled into closing the tag.
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(jsonLd) }}
+      />
       <div className="mx-auto max-w-4xl">
         <Link
           href="/gallery"
@@ -145,6 +186,11 @@ export default async function SkinPage({ params }: Props) {
                 >
                   Download PNG
                 </a>
+                <ShareButton
+                  shareUrl={shareUrl}
+                  shareText={shareText}
+                  skinName={skin.name}
+                />
               </div>
             </div>
           </div>

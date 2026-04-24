@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Geist, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from './_providers/AuthProvider';
+import { SITE_ORIGIN } from '@/lib/seo/site';
 
 const geistSans = Geist({
   subsets: ['latin'],
@@ -14,6 +15,11 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
+  // M14: metadataBase lets child routes emit relative image URLs that
+  // Next.js resolves against the canonical origin. Without it Next logs
+  // a warning and may silently produce preview-deploy subdomain URLs in
+  // OG cards, which then get cached by social platforms for 7–30 days.
+  metadataBase: new URL(SITE_ORIGIN),
   title: {
     default: 'threditor — 3D Minecraft skin editor',
     template: '%s · threditor',
