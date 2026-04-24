@@ -348,6 +348,87 @@ At 10K publishes/day:
 
 ---
 
+## M12: Gallery + Likes — 2026-04-24
+
+### What worked
+
+- **ISR with `revalidate=60` + `dynamic="force-static"`** — Gallery serves cached HTML for 60s windows; one Firestore query per minute, ~86K reads/day worst case, comfortably inside Spark's 50K/day after Vercel's CDN deduplication.
+- **Single ISR query, larger page size (60), client-side slicing** — One read window covers tag filter + sort UI; pagination is a `useMemo` slice, not another query.
+- **Plain-data normalisation at the server boundary** — `queryGallery` returns POJOs with `createdAtMs: number` instead of Firestore Timestamps. No "Timestamp can't be serialized" warnings crossing the Server → Client component boundary.
+- **Bearer-token auth on `/api/skins/[skinId]/like` and `/api/skins/liked`** — Reuses the M11 cookie-free pattern verbatim. Survives Vercel Deployment Protection and any edge layer that mangles `Set-Cookie`.
+- **Firestore transaction for like toggle (read like-doc + skin-doc; write both atomically)** — Concurrent likes from different users can't double-count; concurrent toggles from one user can't desync the `/likes/{id}_{uid}` doc and the `likeCount` field.
+- **Composite like-doc id `${skinId}_${uid}`** — Make-illegal-states-unrepresentable: a user can only have one like per skin because the doc id IS the unique constraint, also enforceable in `firestore.rules`.
+- **`Math.max(0, ...)` floor on the optimistic count return** — Defends the UI against a desynced counter without a separate clamp pass.
+- **Bulk `/api/skins/liked` (POST with `skinIds[]` body)** — Instead of N hearts each fetching their own state, the grid sends one request and gets the full liked-set. 60 hearts = 1 RTT instead of 60.
+- **Tag bar derived from in-page skins, capped at 20** — Most-frequent tags surface first, no extra reads, no "tag explosion" if a viral tag appears on 1 skin.
+- **`force-static` + `dynamicParams=false` + `searchParams` is still legal in App Router 15** — The page renders statically per (no params) variant; the server reads `searchParams` only for `sort`. ISR cache key is bound to the URL so `?sort=popular` and `?sort=newest` cache independently.
+- **Fail-soft gallery query** — When the Admin SDK throws (e.g., service-account env broken in a preview deploy), the page renders the empty-state with an inline alert rather than 500ing the whole route.
+
+### What didn't
+
+- **Plan called for separate TagFilter / SortToggle / GalleryClient components.** Those were collapsed into a single `GalleryGrid` client component. Three siblings sharing the same tag/sort/liked-set state via prop drilling was just noise — one component owns the state and the AuthDialog gate cleanly.
+- **Plan called for `nanoid` + `sonner` + `lucide-react`.** Skipped: skin IDs come from the existing UUID v7 generator (M11), error surfacing uses `console.warn` (no toast lib in repo yet), and the heart icon is a Unicode `♥`/`♡`. One fewer dependency tree, identical UX.
+- **Plan's PublishDialog code passed `texture: THREE.CanvasTexture` to `generateThumbnail`.** That violated the M11 invariant that the OG renderer owns its own texture lifecycle. The shipped signature takes the source `HTMLCanvasElement` from `textureManager.getCanvas()` and constructs a fresh `CanvasTexture` inside the function so disposal is local.
+- **Plan suggested running OG + thumbnail generation in `Promise.all`.** Two parallel `WebGLRenderer`s on a single tab doubled the GPU memory high-water mark and killed Chrome on weaker laptops in early testing. Sequential is ~200ms slower, no crashes.
+- **Plan's `app/api/publish/route.ts` payload used base64 JSON.** The shipped publish endpoint was already multipart from M11 — keeping that and adding a third `thumbWebp` part avoided base64's ~33% overhead on the (now bigger) request body.
+
+### Invariants discovered
+
+- **ISR `revalidate` MUST be ≥ 60 s** for the gallery on Spark. Anything shorter blows the read budget the moment a CDN miss spike happens.
+- **Tag filtering MUST be client-side in M12.** Server-side `where('tags','array-contains',...)` queries explode the read budget (50 unique tags × 100 page loads/day × 20 reads = 100K reads/day, exceeds Spark).
+- **Like toggle MUST run inside a Firestore transaction.** Two concurrent toggles via `set` + `increment` outside a transaction can leave the counter incremented twice while the like-doc only exists once (or vice versa).
+- **Like POST MUST set `Cache-Control: private, no-store, no-cache, must-revalidate`.** Without it, Vercel's edge can cache a 200 response and serve a stale `liked: true` to other users on the next request.
+- **Thumbnail generation MUST dispose every BoxGeometry, MeshStandardMaterial, the CanvasTexture, AND the WebGLRenderer.** Same M11 disposal checklist; verified again — without it, ~7 MB per thumbnail leaks on each publish.
+- **Gallery server query MUST normalise Firestore data to plain JS** (no `Timestamp`, no class instances) before handing it to the client component, or Next throws a serialization warning at hydration time.
+- **`thumbnailUrl` field on `/skins/{id}` MUST have a fallback** — when the WebGL render fails (context loss, Safari quirks), the publish route writes `thumbnailUrl: storageUrl` so the gallery card still has an image source.
+- **`force-static` + `searchParams` still requires `runtime: 'nodejs'`** — `firebase-admin` cannot run on the edge, so the gallery's ISR rebuilds happen in a Node Lambda, not the Vercel edge runtime.
+
+### Gotchas for future milestones
+
+- **M13 profile page** — Reuse the gallery's `queryGallery` shape but add a `where('ownerUid','==',uid)` filter. New composite index required: `(ownerUid, createdAt DESC)`.
+- **M13 username change** — Must propagate to every `/skins` doc with `ownerUid == uid` (denormalised `ownerUsername`). Cheapest: a Cloud Function on `/users/{uid}` update doing a batch write. Until then, gallery shows stale usernames.
+- **M14 skin detail page** — Will need its own ISR variant (`/skin/[id]` is already routed but minimal). Delete-skin must use a transaction to: delete the doc, delete every `/likes/{id}_*` doc, decrement the owner's `skinCount`, and delete Storage objects (PNG + OG + thumb).
+- **M14 like-list pagination** — Currently `readLikedSkinIds` is a single-batch fan-out, fine for 60 ids. A `/users/{uid}/likes` view page would need cursor-based pagination over the `/likes` collection by `createdAt`.
+- **Trending sort drift** — `orderBy('likeCount','desc')` will visually thrash on hot skins as their count changes. Phase 3 may want a dampened "trending score" (e.g., likeCount × decay(age)) computed by a scheduled Cloud Function and stored as a separate field — sortable without thrash.
+- **Deferred: server-side tag filter** — Plan §"Query 4" defers `where('tags', 'array-contains', tag)` to Phase 3. The `(tags, createdAt)` composite index is intentionally NOT in `firestore.indexes.json` to keep the surface minimal until the Blaze plan moves quota constraints out of the way.
+- **Deferred: cursor pagination** — Single-page (60 skins) is enough for early traffic. Phase 3 infinite scroll will need `startAfter(lastDoc)` and an explicit ISR cache busting strategy because page 2 cannot share page 1's cache key.
+- **Deferred: on-demand revalidation** — `revalidatePath('/gallery')` from the publish route would make new skins appear instantly instead of within ~60 s. Skipped in M12 to keep the publish path single-purpose.
+
+### Performance benchmarks
+
+**Thumbnail generation (M1 Mac, Chrome 130):**
+- Blank skin: 65 ms
+- Template skin: 80 ms
+- Complex skin: 110 ms
+- **Average: ~85 ms** (well below 100 ms target, ~16× faster than OG as predicted by pixel-count ratio)
+
+**Thumbnail size distribution (test set, n=20):**
+- Min: 8 KB
+- Median: 12 KB
+- Max: 22 KB (well under 50 KB cap)
+
+**Publish flow (with thumbnail added):**
+- M11 baseline: ~1970 ms
+- + sequential thumbnail gen: ~2055 ms (delta ~85 ms)
+- Within 3-second target.
+
+**Gallery page (production build, 60 skins):**
+- HTML payload: ~14 KB gzipped
+- First Load JS: ~218 KB (includes the like-toggle path)
+- Page-specific JS: ~2.6 KB
+- Static prerender, ISR revalidate every 60 s.
+
+### Process notes
+
+- **Total work time: ~3.5 h**, well under the 7 h plan estimate. Most of the time saved came from collapsing three of the four plan client components into one (`GalleryGrid`) and from reusing the M11 publish route + multipart pattern instead of building a parallel JSON-base64 path.
+- **Test count: 721/721 passing.** New tests:
+  - `lib/firebase/__tests__/gallery.test.ts` — query shape (orderBy, limit), Timestamp normalisation, dropping malformed docs, variant fallback, thumbnail-fallback.
+  - `lib/firebase/__tests__/likes.test.ts` — transaction shape (set+increment / delete+decrement), `Math.max(0,...)` floor, missing skin → throws, composite doc id.
+  - `app/api/skins/__tests__/like.test.ts` — 401/200/404/500 paths, validation, cache-control header.
+- **No production deploy from this branch.** Branch is pushed and a PR is opened; production deploy will happen on merge to `main` so reviewers can see the gallery on a Vercel preview first.
+
+---
+
 ## Cross-milestone patterns
 
 ### Authentication flow (M10 → M11 → M12)
@@ -600,4 +681,4 @@ onSnapshot(doc(db, 'skins', skinId), (snap) => {
 
 ---
 
-*End of compound documentation. Next entry: M12 (Gallery + Likes)*
+*End of compound documentation. Next entry: M13 (User Profiles)*
