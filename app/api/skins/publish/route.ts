@@ -35,6 +35,7 @@ import {
 
 const MAX_PNG_BYTES = 100 * 1024; // 100 KB — Minecraft skins are ~1 KB typically
 const MAX_OG_BYTES = 300 * 1024; // 300 KB — generous for 1200×630 WebP@0.85
+const MAX_THUMB_BYTES = 50 * 1024; // 50 KB — 128×128 WebP@0.75 is typically 10–20 KB
 const ALLOWED_VARIANTS = new Set(['classic', 'slim']);
 
 type PublishResponse =
@@ -240,22 +241,47 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       ogBlob = ogWebpRaw;
     }
 
+    // M12 Unit 1: optional 128×128 thumbnail. When absent or the
+    // client-side generator fails, we fall back to the raw 64×64 PNG
+    // via `thumbnailUrl: storageUrl` below so the gallery never has a
+    // blank card.
+    const thumbWebpRaw = form.get('thumbWebp');
+    let thumbBlob: Blob | null = null;
+    if (thumbWebpRaw instanceof Blob && thumbWebpRaw.size > 0) {
+      if (thumbWebpRaw.size > MAX_THUMB_BYTES) {
+        return json(
+          { error: `thumbWebp must be ≤ ${MAX_THUMB_BYTES} bytes` },
+          400,
+        );
+      }
+      if (thumbWebpRaw.type !== 'image/webp') {
+        return json(
+          { error: `thumbWebp content-type must be image/webp (got ${thumbWebpRaw.type})` },
+          400,
+        );
+      }
+      thumbBlob = thumbWebpRaw;
+    }
+
     // 3. skinId.
     const skinId = generateUuidV7();
 
     // 4. Upload. Any throw here means Storage is clean (uploadSkinAssets
-    // rolls back internally on OG-after-PNG failure).
+    // rolls back internally on any mid-chain failure).
     let storageUrl: string;
     let ogImageUrl: string | null;
+    let thumbnailUrl: string | null;
     try {
       const uploaded = await uploadSkinAssets({
         uid,
         skinId,
         pngBlob: skinPng,
         ogBlob,
+        thumbBlob,
       });
       storageUrl = uploaded.storageUrl;
       ogImageUrl = uploaded.ogImageUrl;
+      thumbnailUrl = uploaded.thumbnailUrl;
     } catch (err) {
       const msg = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
       console.error(`publish: upload failed message=${msg} uid=${uid} skinId=${skinId}`);
@@ -286,7 +312,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         name: nameResult.name,
         variant: variant as 'classic' | 'slim',
         storageUrl,
-        thumbnailUrl: storageUrl,
+        // Fall back to the raw PNG when no 128×128 WebP was uploaded,
+        // so the gallery always has *something* to render.
+        thumbnailUrl: thumbnailUrl ?? storageUrl,
         ogImageUrl,
         tags: tagsNormalized,
       });
@@ -347,7 +375,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         permalinkUrl: `/skin/${skinId}`,
         storageUrl,
         ogImageUrl,
-        thumbnailUrl: storageUrl,
+        thumbnailUrl: thumbnailUrl ?? storageUrl,
       },
       200,
     );

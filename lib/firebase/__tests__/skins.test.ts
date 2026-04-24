@@ -99,10 +99,14 @@ describe('createSkinDoc', () => {
 
     expect(userSet).toHaveBeenCalledTimes(1);
     const userArgs = userSet.mock.calls[0];
+    // M13: bootstrap uses the incoming `ownerUsername` so the profile
+    // page is reachable at `/u/alice` instead of `/u/user-abc…`. If
+    // `ownerUsername` doesn't match USERNAME_PATTERN, we fall back to
+    // `defaultUsername(uid)` — covered by a separate test below.
     expect(userArgs[1]).toMatchObject({
       uid: 'user-123',
-      username: expect.stringMatching(/^user-/),
-      displayName: expect.stringMatching(/^user-/),
+      username: 'alice',
+      displayName: 'alice',
       photoURL: null,
     });
     // skinCount increment sentinel.
@@ -162,5 +166,24 @@ describe('createSkinDoc', () => {
     userGet.mockResolvedValue({ exists: true });
     await createSkinDoc({ ...VALID_INPUT, variant: 'slim' });
     expect(skinSet.mock.calls[0][1].variant).toBe('slim');
+  });
+
+  it('M13: bootstrap falls back to defaultUsername when the lowercased ownerUsername is not a valid URL slug', async () => {
+    userGet.mockResolvedValue({ exists: false });
+    // Contains a dot — invalid even when lowercased.
+    await createSkinDoc({ ...VALID_INPUT, ownerUsername: 'first.last' });
+    const userArgs = userSet.mock.calls[0];
+    expect(userArgs[1].username).toMatch(/^user-/);
+    // Display name preserves the original (pretty) casing for the UI.
+    expect(userArgs[1].displayName).toBe('first.last');
+  });
+
+  it('M13: bootstrap lowercases a mixed-case ownerUsername for the URL-safe username field', async () => {
+    userGet.mockResolvedValue({ exists: false });
+    await createSkinDoc({ ...VALID_INPUT, ownerUsername: 'Alice' });
+    const userArgs = userSet.mock.calls[0];
+    expect(userArgs[1].username).toBe('alice');
+    // Display name preserves the original casing.
+    expect(userArgs[1].displayName).toBe('Alice');
   });
 });

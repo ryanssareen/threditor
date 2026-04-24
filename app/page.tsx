@@ -36,14 +36,24 @@ export default function LandingPage() {
           </p>
         </div>
 
-        <Link
-          href="/editor"
-          prefetch={false}
-          data-testid="hero-cta"
-          className="rounded-md bg-accent px-6 py-3 text-base font-semibold text-canvas transition-colors hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        >
-          Open the editor
-        </Link>
+        <div className="flex flex-col items-center gap-3 sm:flex-row">
+          <Link
+            href="/editor"
+            prefetch={false}
+            data-testid="hero-cta"
+            className="rounded-md bg-accent px-6 py-3 text-base font-semibold text-canvas transition-colors hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            Open the editor
+          </Link>
+          <Link
+            href="/gallery"
+            prefetch={false}
+            data-testid="hero-gallery"
+            className="rounded-md border border-ui-border bg-transparent px-6 py-3 text-base font-medium text-text-primary transition-colors hover:border-accent hover:text-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            Browse gallery
+          </Link>
+        </div>
       </section>
 
       <section className="border-t border-ui-border px-6 py-12">

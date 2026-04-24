@@ -160,12 +160,13 @@ describe('uploadSkinAssets', () => {
 });
 
 describe('deleteSkinAssets', () => {
-  it('removes both PNG + OG paths in one call', async () => {
+  it('removes PNG + OG + thumbnail paths in one call', async () => {
     removeSpy.mockResolvedValue({ error: null, data: [] });
     await deleteSkinAssets({ uid: UID, skinId: SKIN });
     expect(removeSpy).toHaveBeenCalledWith([
       `${UID}/${SKIN}.png`,
       `${UID}/${SKIN}-og.webp`,
+      `${UID}/${SKIN}-thumb.webp`,
     ]);
   });
 

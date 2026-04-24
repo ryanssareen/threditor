@@ -503,16 +503,26 @@ export function EditorLayout() {
       if (bundle === null) {
         throw new Error('Editor not ready');
       }
-      const [{ exportLayersToBlob }, { generateOGImage }] = await Promise.all([
+      const [
+        { exportLayersToBlob },
+        { generateOGImage },
+        { generateThumbnail },
+      ] = await Promise.all([
         import('@/lib/editor/export'),
         import('@/lib/editor/og-image'),
+        import('@/lib/editor/thumbnail'),
       ]);
 
       const pngBlob = await exportLayersToBlob(layersRef.current);
-      const ogBlob = await generateOGImage(
-        bundle.textureManager.getCanvas(),
-        variant,
-      );
+      // OG (1200×630) and thumbnail (128×128) are generated sequentially
+      // rather than in parallel: each spins up its own WebGLRenderer, so
+      // running in parallel would double the GPU memory high-water mark
+      // and doubles the risk of a tab-level WebGL context loss on weaker
+      // machines. Sequential is ~200ms slower on a fast laptop but
+      // safer for the long tail of users.
+      const canvasSource = bundle.textureManager.getCanvas();
+      const ogBlob = await generateOGImage(canvasSource, variant);
+      const thumbBlob = await generateThumbnail(canvasSource, variant);
 
       // Bearer-token auth path — cookie-free. Grab a fresh Firebase
       // ID token client-side and send it in the Authorization header.
@@ -536,6 +546,9 @@ export function EditorLayout() {
       form.append('skinPng', pngBlob, 'skin.png');
       if (ogBlob !== null) {
         form.append('ogWebp', ogBlob, 'skin-og.webp');
+      }
+      if (thumbBlob !== null) {
+        form.append('thumbWebp', thumbBlob, 'skin-thumb.webp');
       }
 
       const res = await fetch('/api/skins/publish', {
