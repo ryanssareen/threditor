@@ -58,6 +58,7 @@ beforeEach(() => {
   uploadSkinAssetsMock.mockResolvedValue({
     storageUrl: 'https://stub/png',
     ogImageUrl: 'https://stub/og',
+    thumbnailUrl: null,
   });
   createSkinDocMock.mockResolvedValue({ skinId: 'stub-uuid-v7' });
   deleteSkinAssetsMock.mockResolvedValue(undefined);
@@ -104,6 +105,7 @@ describe('POST /api/skins/publish', () => {
     uploadSkinAssetsMock.mockResolvedValue({
       storageUrl: 'https://stub/png',
       ogImageUrl: null,
+      thumbnailUrl: null,
     });
     const req = await makeRequest({
       name: 'Cool',

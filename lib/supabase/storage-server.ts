@@ -62,6 +62,10 @@ function skinOgPath(uid: string, skinId: string): string {
   return `${uid}/${skinId}-og.webp`;
 }
 
+function skinThumbnailPath(uid: string, skinId: string): string {
+  return `${uid}/${skinId}-thumb.webp`;
+}
+
 function publicUrl(env: RequiredEnv, path: string): string {
   return `${env.supabaseUrl}/storage/v1/object/public/${env.bucket}/${path}`;
 }
@@ -69,6 +73,7 @@ function publicUrl(env: RequiredEnv, path: string): string {
 export type UploadResult = {
   storageUrl: string;
   ogImageUrl: string | null;
+  thumbnailUrl: string | null;
 };
 
 export type UploadInput = {
@@ -76,6 +81,7 @@ export type UploadInput = {
   skinId: string;
   pngBlob: Blob;
   ogBlob?: Blob | null;
+  thumbBlob?: Blob | null;
 };
 
 export async function uploadSkinAssets({
@@ -83,11 +89,28 @@ export async function uploadSkinAssets({
   skinId,
   pngBlob,
   ogBlob,
+  thumbBlob,
 }: UploadInput): Promise<UploadResult> {
   const env = readEnv();
   const client = makeClient(env);
   const pngPath = skinPngPath(uid, skinId);
   const ogPath = skinOgPath(uid, skinId);
+  const thumbPath = skinThumbnailPath(uid, skinId);
+
+  // Track every successfully-uploaded path so we can roll back if a
+  // later upload in the chain fails — avoids orphaned Storage objects
+  // (COMPOUND M11 invariant).
+  const uploaded: string[] = [];
+
+  const rollback = async () => {
+    if (uploaded.length === 0) return;
+    await client.storage
+      .from(env.bucket)
+      .remove(uploaded)
+      .catch(() => {
+        /* best-effort */
+      });
+  };
 
   const pngUpload = await client.storage
     .from(env.bucket)
@@ -98,6 +121,7 @@ export async function uploadSkinAssets({
   if (pngUpload.error !== null) {
     throw new Error(`skin PNG upload failed: ${pngUpload.error.message}`);
   }
+  uploaded.push(pngPath);
   const storageUrl = publicUrl(env, pngPath);
 
   let ogImageUrl: string | null = null;
@@ -109,20 +133,30 @@ export async function uploadSkinAssets({
         upsert: false,
       });
     if (ogUpload.error !== null) {
-      // Roll back the PNG so we don't leave an orphan.
-      await client.storage
-        .from(env.bucket)
-        .remove([pngPath])
-        .catch(() => {
-          /* best-effort cleanup — if it fails the orphan is visible,
-             but we still surface the original error to the caller */
-        });
+      await rollback();
       throw new Error(`OG upload failed: ${ogUpload.error.message}`);
     }
+    uploaded.push(ogPath);
     ogImageUrl = publicUrl(env, ogPath);
   }
 
-  return { storageUrl, ogImageUrl };
+  let thumbnailUrl: string | null = null;
+  if (thumbBlob !== undefined && thumbBlob !== null) {
+    const thumbUpload = await client.storage
+      .from(env.bucket)
+      .upload(thumbPath, thumbBlob, {
+        contentType: 'image/webp',
+        upsert: false,
+      });
+    if (thumbUpload.error !== null) {
+      await rollback();
+      throw new Error(`thumbnail upload failed: ${thumbUpload.error.message}`);
+    }
+    uploaded.push(thumbPath);
+    thumbnailUrl = publicUrl(env, thumbPath);
+  }
+
+  return { storageUrl, ogImageUrl, thumbnailUrl };
 }
 
 export type DeleteInput = {
@@ -141,7 +175,11 @@ export async function deleteSkinAssets({
 }: DeleteInput): Promise<void> {
   const env = readEnv();
   const client = makeClient(env);
-  const paths = [skinPngPath(uid, skinId), skinOgPath(uid, skinId)];
+  const paths = [
+    skinPngPath(uid, skinId),
+    skinOgPath(uid, skinId),
+    skinThumbnailPath(uid, skinId),
+  ];
   // Supabase's .remove accepts a list and returns the per-path result.
   // 404-equivalent (file not found) is not treated as an error by the
   // storage API — it's silently skipped. So a single call is enough.
