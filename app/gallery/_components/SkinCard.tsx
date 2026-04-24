@@ -21,9 +21,18 @@
  */
 
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { useCallback, useState, useTransition } from 'react';
 
 import type { GallerySkin } from '@/lib/firebase/gallery';
+
+// M13.1: lazy-load the 3D preview. three.js + R3F + drei total ~750 KB;
+// gallery renders up to 60 cards so we must not pull that bundle up-front.
+// The chunk downloads on first hover and is cached for subsequent cards.
+const SkinPreview3D = dynamic(
+  () => import('./SkinPreview3D').then((mod) => ({ default: mod.SkinPreview3D })),
+  { ssr: false },
+);
 
 type Props = {
   skin: GallerySkin;
@@ -71,6 +80,11 @@ export function SkinCard({
   const [count, setCount] = useState(skin.likeCount);
   const [, startTransition] = useTransition();
   const [inFlight, setInFlight] = useState(false);
+  // M13.1: hover-to-3D state. Only fires on devices with real hover
+  // (desktop mice); touch devices never enter this branch so a tap
+  // still navigates to /skin/[id] without getting hijacked by
+  // OrbitControls swallowing the tap as a rotation gesture.
+  const [show3D, setShow3D] = useState(false);
 
   const handleLike = useCallback(
     async (e: React.MouseEvent) => {
@@ -116,6 +130,8 @@ export function SkinCard({
     <article
       data-testid={`skin-card-${skin.id}`}
       data-skin-id={skin.id}
+      onMouseEnter={() => setShow3D(true)}
+      onMouseLeave={() => setShow3D(false)}
       className="group overflow-hidden rounded-lg border border-ui-border bg-ui-surface transition-colors hover:border-accent/40"
     >
       <Link
@@ -124,17 +140,29 @@ export function SkinCard({
         className="block"
         data-testid={`skin-card-link-${skin.id}`}
       >
-        <div className="flex items-center justify-center bg-ui-base p-4">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={skin.thumbnailUrl}
-            alt={skin.name}
-            width={128}
-            height={128}
-            loading="lazy"
-            style={{ imageRendering: 'pixelated' }}
-            className="h-32 w-32"
-          />
+        <div
+          data-testid={`skin-card-preview-${skin.id}`}
+          data-preview-3d={show3D ? 'true' : 'false'}
+          className="relative flex h-48 items-center justify-center bg-ui-base p-4"
+        >
+          {show3D ? (
+            <SkinPreview3D
+              skinUrl={skin.storageUrl}
+              variant={skin.variant}
+              className="absolute inset-0"
+            />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={skin.thumbnailUrl}
+              alt={skin.name}
+              width={128}
+              height={128}
+              loading="lazy"
+              style={{ imageRendering: 'pixelated' }}
+              className="h-32 w-32"
+            />
+          )}
         </div>
       </Link>
 

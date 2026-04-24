@@ -6,6 +6,8 @@ import { notFound } from 'next/navigation';
 
 import { getAdminFirebase } from '@/lib/firebase/admin';
 
+import { SkinDetailPreview } from './_components/SkinDetailPreview';
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -72,67 +74,78 @@ export default async function SkinPage({ params }: Props) {
 
   return (
     <main className="min-h-screen bg-canvas px-6 py-12 text-text-primary">
-      <div className="mx-auto max-w-2xl">
+      <div className="mx-auto max-w-4xl">
         <Link
-          href="/"
+          href="/gallery"
+          data-testid="skin-detail-back"
           className="mb-6 inline-block text-sm text-text-secondary hover:text-text-primary"
         >
-          ← Back to editor
+          ← Back to gallery
         </Link>
 
-        <div className="overflow-hidden rounded-lg border border-ui-border bg-ui-surface">
-          <div className="flex items-center justify-center bg-ui-base p-8">
-            {/* The 64×64 PNG is crisp only at integer scale. Render at 256
-                (4×) with pixelated smoothing so the skin atlas is readable. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={skin.storageUrl}
-              alt={skin.name}
-              width={256}
-              height={256}
-              style={{ imageRendering: 'pixelated' }}
-              className="h-64 w-64"
-            />
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* Left: always-on interactive 3D preview. */}
+          <div
+            data-testid="skin-detail-preview"
+            className="overflow-hidden rounded-lg border border-ui-border bg-ui-surface"
+          >
+            <div className="aspect-square bg-ui-base p-8">
+              <SkinDetailPreview
+                skinUrl={skin.storageUrl}
+                variant={skin.variant}
+              />
+            </div>
           </div>
 
-          <div className="border-t border-ui-border px-6 py-4">
-            <h1 className="mb-1 text-2xl font-semibold">{skin.name}</h1>
-            <p className="text-sm text-text-secondary">
-              by {skin.ownerUsername} · {skin.variant} model
-            </p>
+          {/* Right: metadata panel. */}
+          <div className="overflow-hidden rounded-lg border border-ui-border bg-ui-surface">
+            <div className="px-6 py-4">
+              <h1 className="mb-1 text-2xl font-semibold">{skin.name}</h1>
+              <p className="text-sm text-text-secondary">
+                by{' '}
+                <Link
+                  href={`/u/${skin.ownerUsername}`}
+                  data-testid="skin-detail-owner"
+                  className="hover:text-accent hover:underline"
+                >
+                  {skin.ownerUsername}
+                </Link>
+                {' '}· {skin.variant} model
+              </p>
 
-            {skin.tags.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1">
-                {skin.tags.map((t) => (
-                  <span
-                    key={t}
-                    className="rounded bg-ui-base px-2 py-0.5 text-xs text-text-secondary"
-                  >
-                    {t}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            <div className="mt-4 flex items-center justify-between text-xs text-text-secondary">
-              <span>
-                {skin.likeCount} {skin.likeCount === 1 ? 'like' : 'likes'}
-              </span>
-              {createdAtMs !== null && (
-                <time dateTime={new Date(createdAtMs).toISOString()}>
-                  {new Date(createdAtMs).toLocaleDateString()}
-                </time>
+              {skin.tags.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1">
+                  {skin.tags.map((t) => (
+                    <span
+                      key={t}
+                      className="rounded bg-ui-base px-2 py-0.5 text-xs text-text-secondary"
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
               )}
-            </div>
 
-            <div className="mt-4 flex gap-2">
-              <a
-                href={skin.storageUrl}
-                download={`${skin.name}.png`}
-                className="flex-1 rounded bg-accent px-3 py-2 text-center text-sm font-medium text-canvas hover:bg-accent-hover"
-              >
-                Download PNG
-              </a>
+              <div className="mt-4 flex items-center justify-between text-xs text-text-secondary">
+                <span>
+                  {skin.likeCount} {skin.likeCount === 1 ? 'like' : 'likes'}
+                </span>
+                {createdAtMs !== null && (
+                  <time dateTime={new Date(createdAtMs).toISOString()}>
+                    {new Date(createdAtMs).toLocaleDateString()}
+                  </time>
+                )}
+              </div>
+
+              <div className="mt-6 flex gap-2">
+                <a
+                  href={skin.storageUrl}
+                  download={`${skin.name}.png`}
+                  className="flex-1 rounded bg-accent px-3 py-2 text-center text-sm font-medium text-canvas hover:bg-accent-hover"
+                >
+                  Download PNG
+                </a>
+              </div>
             </div>
           </div>
         </div>
