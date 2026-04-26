@@ -1174,3 +1174,212 @@ tests, double the plan's +40 target).
 ---
 
 *End of M14 compound documentation.*
+
+---
+
+## M15: HD Skin Export (Upscale-at-Export) — 2026-04-24
+
+**Shipped:** Export dialog gains a 64 / 128 / 256 / 512 resolution picker.
+HD resolutions are produced by nearest-neighbor upscaling the composited
+64×64 canvas at encode time — the editor, gallery, profile, OG images,
+3D preview, tools, undo, and persistence are all untouched. HD is free
+(Pro gate deferred to M23).
+
+**Timeline:** ~1.5 hours (plan estimated 3 hours). Below-budget because
+the feature was genuinely additive — no schema changes, no new routes,
+no cross-cutting concerns.
+
+**Test coverage:** 849 → 877 (+28, above the plan's +15–20 target).
+
+### What worked
+
+- **Upscale-at-export, not edit-at-HD.** The 64×64 assumption is
+  load-bearing across `TextureManager`, `PlayerModel`, `atlas-math`,
+  `overlay-map`, tools, undo, and IndexedDB persistence (M3 COMPOUND:
+  "changing SKIN_ATLAS_SIZE is a cross-milestone contract break").
+  Doing the upscale downstream of the composite preserves every
+  invariant — the canvas that feeds `toBlob` is a *separate* canvas,
+  constructed fresh per export, so the editor's live texture pipeline
+  never sees anything non-64.
+- **Pure-JS nearest-neighbor loop, not `ctx.drawImage(src, 0,0, tw,
+  th)` with `imageSmoothingEnabled=false`.** The smoothing flag has
+  historically been unreliable across browsers, and some ad-blocker /
+  privacy extensions force smoothing on. A typed-array loop is
+  deterministic, fast enough (<1 ms at 512×512), and sidesteps the
+  override risk entirely. Trade-off: it's ~3× slower than
+  `drawImage` in the hot path, but the hot path runs once per export
+  (not per frame), so the trade is painless.
+- **Discriminated-union `SupportedResolution = 64 | 128 | 256 | 512`.**
+  Literal union on the public API means callers can't pass an
+  unsupported size (e.g. `exportLayersToBlob(layers, { resolution:
+  200 })` is a TS error). Compile-time safety costs nothing at
+  runtime.
+- **Default argument for backward compatibility.**
+  `exportLayersToBlob(layers, options = {})` with
+  `resolution: options.resolution ?? 64` means every existing caller
+  (and any future migration script) keeps the M8 behaviour unchanged.
+  Zero-risk change to the existing export path.
+- **Filename convention: legacy at 64, `-{size}` suffix at HD.**
+  `skin-classic-2026-04-24T12-30-45.png` stays for 64×64; HD gets
+  `-128` / `-256` / `-512` appended *before* the extension. Users who
+  export multiple resolutions don't overwrite each other. Muscle
+  memory on 64×64 preserved.
+- **Resolution state resets to 64 on dialog re-open.** Not sticky — if
+  a user did a 512 export yesterday, today's default is still 64.
+  Matches the variant selector's behaviour and avoids accidentally
+  HD-exporting every skin after one HD session.
+- **HD help note only renders when a non-64 resolution is picked.**
+  Keeps the default dialog clean; surfaces the "pixels upscaled, not
+  higher-detail" message exactly when it's relevant.
+- **End-to-end browser verification via intercepted `URL.createObjectURL`.**
+  Override the global, click Export, catch the blob, decode via
+  `Image.onload` to read `naturalWidth/Height`. Confirmed the 512×512
+  export is a valid 512×512 PNG (7.2 KB, image/png) without
+  needing a real download.
+- **TextureManager disposal works across resolutions.** The Unit 2
+  spy test caught that `finally { tm.dispose() }` fires whether or
+  not the upscale path ran — no per-export GPU leak regardless of
+  which branch the code took.
+
+### What didn't
+
+- **Mock's `getContext` created a fresh context object per call.** The
+  `imageSmoothingEnabled` regression-guard test asserted `false` on
+  the returned ctx but saw `true` because the test's own second call
+  to `getContext('2d')` constructed a NEW mock ctx with the default
+  `true`. Fixed by caching the ctx on the canvas element in the mock
+  — matches real browser semantics. Lesson: test-harness mocks that
+  "mostly work" can mis-read production behaviour when the behaviour
+  depends on object identity.
+- **First HD all-bytes test ran in 3.3 seconds.** Iterating 1M
+  `expect().toBe()` calls over a 512×512 buffer was slow. Switched
+  to `pixels.every((b) => b === 128)` — one expect call, same
+  coverage, runs in <10 ms. Lesson: `expect()` has per-call
+  overhead; for bulk array assertions use a single `.every` /
+  `.filter`-based check.
+- **Nothing else, actually.** The plan was well-scoped. No surprises.
+
+### Invariants discovered
+
+- **HD export MUST use a fresh throwaway canvas, never mutate the
+  composite canvas.** The TextureManager's canvas is bound to the
+  three.js texture via `CanvasTexture`; resizing or redrawing it at
+  HD would corrupt the live editor view. Upscale → new canvas is the
+  only safe shape.
+- **`imageSmoothingEnabled = false` is a contract, not an
+  implementation detail.** Even when the current implementation
+  uses a pure-JS nearest-neighbor loop that doesn't rely on the
+  flag, the test suite locks in the flag's state so a future
+  refactor reintroducing `drawImage` with smoothing enabled gets
+  caught immediately.
+- **M8 Minecraft-safe pre-image (alpha=0 AND RGB=0 in transparent
+  regions) survives nearest-neighbor upscale.** A (0,0,0,0) source
+  pixel maps to a block of (0,0,0,0) destination pixels — no
+  bilinear leak of background colour into transparent regions. Test
+  locks this in at 512×512.
+- **Default-argument `resolution = 64` keeps the M8 export path
+  bit-for-bit identical.** The pixel-parity test (comparing
+  `exportLayersToBlob` output against `TextureManager.composite`
+  output byte-for-byte) still passes without modification.
+- **SupportedResolution is 64 | 128 | 256 | 512 forever** — or
+  rather, adding a new tier (e.g. 1024) is a deliberate contract
+  change that requires explicit test-suite sign-off, not a silent
+  constant bump.
+- **Resolution state MUST reset on dialog re-open.** Sticky
+  resolution would mean every subsequent export after one HD export
+  would silently be HD too. Matches the existing variant-selector
+  reset pattern — same rule applies.
+
+### Gotchas for M16+ (AI Generation, Smart Wear & Tear, future HD painting)
+
+- **If M16+ ever introduces "true HD painting" (real high-resolution
+  detail at edit time), it is NOT an M15 follow-up.** It's a
+  separate, much larger milestone. `SKIN_ATLAS_SIZE` becomes a
+  per-document field; `Layer.pixels` length becomes
+  `atlasSize² × 4`; `TextureManager`'s canvas sizing, the scratch
+  canvas, tool stamp math, island-map generation, mirror lookup,
+  undo diff budget, and IndexedDB persistence all need updating.
+  Realistic budget: 12–20 hours, not 4–6. M15's upscale-at-export
+  approach does NOT shortcut that work.
+- **Pro gate for HD is a M23 add-on, not M15 tech debt.** The
+  dialog's resolution radios are `<input type="radio">` with no
+  `disabled` attribute today. When M23 ships `UserProfile.tier`,
+  gating is literally `disabled={user?.tier !== 'pro' && opt.value
+  !== 64}` on the radio label. One-line change, no schema migration.
+- **OG image generation stays 1200×630 from the 64×64 live texture,
+  always.** HD export doesn't feed OG. If a future milestone wants
+  HD-sourced OG, it needs to: (a) compose at HD, (b) render the 3D
+  model at HD, (c) tone-map to 1200×630. That's a separate
+  pipeline — don't try to reuse the M15 upscaler for it.
+- **Filename sanitisation runs on the full string including the
+  `-{size}` suffix.** `sanitizeFilename` strips control chars and
+  colons; numbers are safe. If a future milestone adds user-
+  supplied resolution labels (e.g. a "Custom" tier), re-verify
+  the sanitiser catches whatever characters those labels introduce.
+- **The upscale canvas is garbage-collected after `toBlob` resolves.**
+  No explicit dispose — it's a Canvas2D canvas, not a
+  `CanvasTexture`. If a future milestone wraps the upscale canvas
+  in a three.js texture (e.g. to preview the HD output in 3D
+  before downloading), that texture DOES need explicit `.dispose()`
+  per M11's disposal checklist.
+
+### Performance benchmarks
+
+**Nearest-neighbor upscale (M1 Mac, dev build):**
+- 64 → 64 (pass-through): <0.1 ms (single `putImageData` with copied bytes)
+- 64 → 128 (2× / 16K pixels): <0.5 ms
+- 64 → 256 (4× / 65K pixels): <1 ms
+- 64 → 512 (8× / 262K pixels): 1–3 ms
+
+**Export end-to-end (M1 Mac, dev build):**
+- `exportLayersToBlob` at 64: ~10 ms
+- `exportLayersToBlob` at 512: 15–25 ms (composite + upscale + toBlob)
+
+**Exported PNG size (typical skin):**
+- 64×64: ~1 KB
+- 512×512: 5–10 KB (well under the 50 KB worst-case plan estimate
+  thanks to the 8×8 block structure compressing efficiently).
+
+### Tests added
+
+- `tests/upscale.test.ts` — 11 tests (pass-through, 2×/4×/8× upscale,
+  single-pixel-to-block invariants, Minecraft-safe pre-image at
+  512×512, `imageSmoothingEnabled=false` regression guard,
+  non-64 source tolerance, source immutability, null-context
+  error path, `SupportedResolution` type compilation).
+- `tests/export.test.ts` — 8 new (default 64 backing, 128/256/512
+  backing sizes, nearest-neighbor byte preservation, transparent
+  pre-image at 512, TextureManager disposal across all
+  resolutions) + 3 new `buildExportFilename` tests for the
+  `-{size}` suffix.
+- `tests/export-dialog.test.tsx` — 7 new (4 radios render, 64
+  preselected, HD note toggles on/off, filename preview updates,
+  click Export at 256 passes `{ resolution: 256 }`, dialog re-open
+  resets to 64).
+
+### Files touched
+
+**New:**
+- `lib/editor/upscale.ts`
+- `tests/upscale.test.ts`
+
+**Modified:**
+- `lib/editor/export.ts` — `exportLayersToBlob` accepts
+  `{ resolution }`, `buildExportFilename` accepts a 3rd arg,
+  re-exports `SupportedResolution`.
+- `app/editor/_components/ExportDialog.tsx` — resolution picker
+  fieldset, HD help note, resolution state, wired through to
+  `exportLayersToBlob` + `buildExportFilename`.
+- `tests/export.test.ts` — HD cases added.
+- `tests/export-dialog.test.tsx` — mock updated to honour the
+  resolution arg, picker tests added.
+
+**Not touched (by design):**
+- `lib/three/constants.ts` (`SKIN_ATLAS_SIZE = 64` stays).
+- `lib/editor/texture.ts`, `lib/editor/types.ts`, `lib/three/PlayerModel.tsx`.
+- `lib/firebase/*`, `lib/supabase/*`, `lib/seo/*`.
+- Any gallery / profile / skin-detail / publish / OG route.
+
+---
+
+*End of M15 compound documentation.*

@@ -19,9 +19,21 @@ import {
   buildExportFilename,
   downloadBlob,
   exportLayersToBlob,
+  type SupportedResolution,
 } from '@/lib/editor/export';
 import { useEditorStore } from '@/lib/editor/store';
 import type { Layer, SkinVariant } from '@/lib/editor/types';
+
+const RESOLUTION_OPTIONS: ReadonlyArray<{
+  value: SupportedResolution;
+  label: string;
+  sublabel: string;
+}> = [
+  { value: 64, label: '64×64', sublabel: 'Minecraft standard' },
+  { value: 128, label: '128×128', sublabel: 'HD · modded only' },
+  { value: 256, label: '256×256', sublabel: 'HD · modded only' },
+  { value: 512, label: '512×512', sublabel: 'HD · modded only' },
+];
 
 type Props = {
   open: boolean;
@@ -46,6 +58,12 @@ export function ExportDialog({ open, onClose, getLayers }: Props) {
   // override without mutating store (a wrong-variant export should not
   // flip the editor's variant). Re-sync on (re)open.
   const [selectedVariant, setSelectedVariant] = useState<SkinVariant>(currentVariant);
+  // M15: resolution picker. Default to 64 (Minecraft standard) so the
+  // existing user experience is unchanged; HD is an explicit opt-in.
+  // Local state (not zustand) because the choice is per-export, not
+  // part of the skin's canonical state.
+  const [selectedResolution, setSelectedResolution] =
+    useState<SupportedResolution>(64);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,11 +73,12 @@ export function ExportDialog({ open, onClose, getLayers }: Props) {
   const guardrailActive =
     hasEditedSinceTemplate === false && lastAppliedTemplateId !== null;
 
-  // On (re)open: sync selectedVariant, clear error, remember the
-  // element that had focus so we can restore on close.
+  // On (re)open: sync selectedVariant, reset resolution to the
+  // default (64 — vanilla), clear error, remember focus.
   useEffect(() => {
     if (!open) return;
     setSelectedVariant(currentVariant);
+    setSelectedResolution(64);
     setError(null);
     returnFocusRef.current = (document.activeElement as HTMLElement | null) ?? null;
   }, [open, currentVariant]);
@@ -115,14 +134,21 @@ export function ExportDialog({ open, onClose, getLayers }: Props) {
 
   if (!open) return null;
 
-  const filename = buildExportFilename(selectedVariant);
+  const filename = buildExportFilename(
+    selectedVariant,
+    new Date(),
+    selectedResolution,
+  );
   const variantMismatch = selectedVariant !== currentVariant;
+  const isHdResolution = selectedResolution !== 64;
 
   const handleExport = async () => {
     setBusy(true);
     setError(null);
     try {
-      const blob = await exportLayersToBlob(getLayers());
+      const blob = await exportLayersToBlob(getLayers(), {
+        resolution: selectedResolution,
+      });
       await downloadBlob(blob, filename);
       onClose();
     } catch (err) {
@@ -251,6 +277,53 @@ export function ExportDialog({ open, onClose, getLayers }: Props) {
               >
                 This will export with <strong>{selectedVariant}</strong> proportions.
                 The current skin uses <strong>{currentVariant}</strong>.
+              </p>
+            )}
+          </fieldset>
+
+          <fieldset>
+            <legend className="mb-2 block font-mono text-xs uppercase tracking-wide text-text-secondary">
+              Resolution
+            </legend>
+            <div
+              role="radiogroup"
+              aria-label="Export resolution"
+              className="grid grid-cols-2 gap-1"
+            >
+              {RESOLUTION_OPTIONS.map((opt) => (
+                <label
+                  key={opt.value}
+                  data-testid={`export-resolution-${opt.value}`}
+                  className={`cursor-pointer rounded-sm border px-2 py-1.5 text-center font-mono text-xs leading-tight ${
+                    selectedResolution === opt.value
+                      ? 'border-accent bg-ui-base text-text-primary'
+                      : 'border-ui-border bg-ui-base text-text-secondary hover:border-accent/60'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="export-resolution"
+                    value={opt.value}
+                    checked={selectedResolution === opt.value}
+                    onChange={() => setSelectedResolution(opt.value)}
+                    className="sr-only"
+                  />
+                  <span className="block">{opt.label}</span>
+                  <span className="block text-[10px] text-text-muted">
+                    {opt.sublabel}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {isHdResolution && (
+              <p
+                role="status"
+                data-testid="export-hd-note"
+                className="mt-2 text-xs text-text-secondary"
+              >
+                Vanilla Minecraft requires 64×64. HD resolutions are pixel-
+                upscaled for modded servers and resource packs — they don&apos;t
+                add detail.
               </p>
             )}
           </fieldset>

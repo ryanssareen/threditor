@@ -33,8 +33,14 @@
 import { TextureManager } from './texture';
 import type { Layer } from './types';
 import type { SkinVariant } from './types';
+import {
+  upscaleCanvasNearestNeighbor,
+  type SupportedResolution,
+} from './upscale';
 
 const ATLAS_SIZE = 64;
+
+export type { SupportedResolution } from './upscale';
 
 /**
  * Build a throwaway 64×64 canvas configured for Minecraft-safe PNG
@@ -60,7 +66,13 @@ function createExportCanvas(): {
 }
 
 /**
- * Composite the given layers into a 64×64 RGBA PNG blob.
+ * Composite the given layers into an RGBA PNG blob at the requested
+ * resolution.
+ *
+ * Default resolution is 64×64 (Minecraft vanilla standard). When a
+ * higher resolution is passed, the composite is nearest-neighbor
+ * upscaled before PNG encoding. The editor itself stays 64×64 — HD
+ * is a one-shot export artefact, not a persisted asset.
  *
  * Internally instantiates a TextureManager bound to a throwaway canvas
  * (constructor accepts canvas + ctx injections per M6 amendment 1) so
@@ -68,14 +80,26 @@ function createExportCanvas(): {
  */
 export async function exportLayersToBlob(
   layers: readonly Layer[],
+  options: { resolution?: SupportedResolution } = {},
 ): Promise<Blob> {
+  const resolution = options.resolution ?? 64;
   const { canvas, ctx } = createExportCanvas();
   const scratch = createExportCanvas();
   const tm = new TextureManager(canvas, ctx, scratch.canvas, scratch.ctx);
   try {
     tm.composite(layers);
+    // At 64×64 we encode the composite canvas directly — keeps the M8
+    // Safari user-gesture chain intact and avoids a needless copy.
+    // At HD resolutions we run the nearest-neighbor upscaler first;
+    // the upscale is synchronous so the `toBlob` call still fires in
+    // the same gesture.
+    const encodeTarget =
+      resolution === 64
+        ? canvas
+        : upscaleCanvasNearestNeighbor(canvas, resolution);
+
     return await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => {
+      encodeTarget.toBlob((blob) => {
         if (blob === null) {
           reject(new Error('export: canvas.toBlob produced null'));
           return;
@@ -98,15 +122,28 @@ export function sanitizeFilename(name: string): string {
 }
 
 /**
- * `skin-<variant>-<ISO-timestamp-sanitized>.png`
- * E.g. `skin-classic-2026-04-22T12-30-45.png`.
+ * Build an export filename.
+ *
+ * 64×64 exports keep the legacy shape `skin-<variant>-<iso>.png` so
+ * existing users' muscle memory is preserved and the default-case
+ * file name is unchanged from M8.
+ *
+ * HD exports append `-<resolution>` before the extension so users
+ * who export multiple resolutions of the same skin can tell them
+ * apart in their Downloads folder:
+ *   `skin-classic-2026-04-22T12-30-45.png`          (64×64)
+ *   `skin-classic-2026-04-22T12-30-45-128.png`      (128×128)
+ *   `skin-classic-2026-04-22T12-30-45-256.png`      (256×256)
+ *   `skin-classic-2026-04-22T12-30-45-512.png`      (512×512)
  */
 export function buildExportFilename(
   variant: SkinVariant,
   at: Date = new Date(),
+  resolution: SupportedResolution = 64,
 ): string {
   const iso = at.toISOString().slice(0, 19); // 2026-04-22T12:30:45
-  return sanitizeFilename(`skin-${variant}-${iso}.png`);
+  const suffix = resolution === 64 ? '' : `-${resolution}`;
+  return sanitizeFilename(`skin-${variant}-${iso}${suffix}.png`);
 }
 
 type ShowSaveFilePickerOptions = {

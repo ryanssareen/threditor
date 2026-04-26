@@ -191,6 +191,33 @@ describe('buildExportFilename', () => {
     const name = buildExportFilename('classic');
     expect(name).toMatch(/^skin-classic-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.png$/);
   });
+
+  it('default resolution 64 emits no size suffix (legacy shape preserved)', () => {
+    const at = new Date('2026-04-22T12:30:45.000Z');
+    expect(buildExportFilename('classic', at, 64)).toBe(
+      'skin-classic-2026-04-22T12-30-45.png',
+    );
+  });
+
+  it('HD resolutions append -<size> before the extension', () => {
+    const at = new Date('2026-04-22T12:30:45.000Z');
+    expect(buildExportFilename('classic', at, 128)).toBe(
+      'skin-classic-2026-04-22T12-30-45-128.png',
+    );
+    expect(buildExportFilename('classic', at, 256)).toBe(
+      'skin-classic-2026-04-22T12-30-45-256.png',
+    );
+    expect(buildExportFilename('classic', at, 512)).toBe(
+      'skin-classic-2026-04-22T12-30-45-512.png',
+    );
+  });
+
+  it('HD suffix works with slim variant too', () => {
+    const at = new Date('2026-01-02T03:04:05.000Z');
+    expect(buildExportFilename('slim', at, 256)).toBe(
+      'skin-slim-2026-01-02T03-04-05-256.png',
+    );
+  });
 });
 
 // ── exportLayersToBlob ───────────────────────────────────────────────
@@ -232,6 +259,95 @@ describe('exportLayersToBlob', () => {
     const pixels = buf.slice(8);
     for (let i = 0; i < pixels.length; i++) {
       expect(pixels[i]).toBe(0);
+    }
+  });
+
+  it('default resolution produces 64×64 backing (no size arg)', async () => {
+    const blob = await exportLayersToBlob([makeLayer(50)]);
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const pixels = buf.slice(8);
+    // 64 × 64 × 4 RGBA = 16384 backing bytes in the mock output.
+    expect(pixels.length).toBe(64 * 64 * 4);
+  });
+
+  it('resolution=128 produces 128×128 backing', async () => {
+    const blob = await exportLayersToBlob([makeLayer(80)], {
+      resolution: 128,
+    });
+    expect(blob.type).toBe('image/png');
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const pixels = buf.slice(8);
+    expect(pixels.length).toBe(128 * 128 * 4);
+  });
+
+  it('resolution=256 produces 256×256 backing', async () => {
+    const blob = await exportLayersToBlob([makeLayer(80)], {
+      resolution: 256,
+    });
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const pixels = buf.slice(8);
+    expect(pixels.length).toBe(256 * 256 * 4);
+  });
+
+  it('resolution=512 produces 512×512 backing', async () => {
+    const blob = await exportLayersToBlob([makeLayer(80)], {
+      resolution: 512,
+    });
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const pixels = buf.slice(8);
+    expect(pixels.length).toBe(512 * 512 * 4);
+  });
+
+  it('HD export preserves every byte of a solid-colour layer (nearest-neighbor)', async () => {
+    // A layer filled with 0x80 (128) produces an all-128 composite.
+    // Nearest-neighbor upscale to 512×512 must leave every byte at 128.
+    const blob = await exportLayersToBlob([makeLayer(128)], {
+      resolution: 512,
+    });
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const pixels = buf.slice(8);
+    expect(pixels.length).toBe(512 * 512 * 4);
+    // Spot-check rather than loop through 1M bytes — a single expect()
+    // call over the whole buffer catches any deviation and keeps the
+    // test runtime under 10ms.
+    expect(pixels.every((b) => b === 128)).toBe(true);
+  });
+
+  it('HD export: empty-layer input stays fully transparent (Minecraft-safe at 512)', async () => {
+    // M8 invariant: transparent regions MUST be alpha=0 AND RGB=0.
+    // Nearest-neighbor upscale must preserve the zero-byte pre-image
+    // at every destination pixel.
+    const blob = await exportLayersToBlob([], { resolution: 512 });
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const pixels = buf.slice(8);
+    expect(pixels.length).toBe(512 * 512 * 4);
+    // Spot-check corners + centre to avoid a 1M-assertion loop.
+    const spots = [
+      0,
+      pixels.length - 4,
+      (256 * 512 + 256) * 4,
+      (100 * 512 + 100) * 4,
+    ];
+    for (const base of spots) {
+      expect(pixels[base]).toBe(0);
+      expect(pixels[base + 1]).toBe(0);
+      expect(pixels[base + 2]).toBe(0);
+      expect(pixels[base + 3]).toBe(0);
+    }
+  });
+
+  it('resolution option is independent of TextureManager disposal', async () => {
+    // Every resolution path must still dispose the inner TextureManager.
+    // Spying on the prototype catches the disposal whichever branch runs.
+    const disposeSpy = vi.spyOn(TextureManager.prototype, 'dispose');
+    try {
+      await exportLayersToBlob([makeLayer(10)], { resolution: 64 });
+      await exportLayersToBlob([makeLayer(10)], { resolution: 256 });
+      await exportLayersToBlob([makeLayer(10)], { resolution: 512 });
+      // 3 exports → 3 dispose calls (one per call, regardless of path).
+      expect(disposeSpy).toHaveBeenCalledTimes(3);
+    } finally {
+      disposeSpy.mockRestore();
     }
   });
 
