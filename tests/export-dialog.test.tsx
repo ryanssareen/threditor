@@ -15,7 +15,14 @@ import type { Layer } from '../lib/editor/types';
 vi.mock('../lib/editor/export', () => ({
   exportLayersToBlob: vi.fn(async () => new Blob([new Uint8Array([1])], { type: 'image/png' })),
   downloadBlob: vi.fn(async () => {}),
-  buildExportFilename: (variant: string) => `skin-${variant}-stub.png`,
+  buildExportFilename: (
+    variant: string,
+    _at?: Date,
+    resolution: number = 64,
+  ) => {
+    const suffix = resolution === 64 ? '' : `-${resolution}`;
+    return `skin-${variant}-stub${suffix}.png`;
+  },
   sanitizeFilename: (s: string) => s,
 }));
 
@@ -164,6 +171,103 @@ describe('ExportDialog', () => {
     });
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(exportMod.exportLayersToBlob).not.toHaveBeenCalled();
+  });
+
+  // ── M15: resolution picker ──
+
+  it('renders all four resolution radios (64/128/256/512)', () => {
+    render(true);
+    expect($('export-resolution-64')).not.toBeNull();
+    expect($('export-resolution-128')).not.toBeNull();
+    expect($('export-resolution-256')).not.toBeNull();
+    expect($('export-resolution-512')).not.toBeNull();
+  });
+
+  it('64x64 is preselected by default', () => {
+    render(true);
+    const r64 = document.querySelector<HTMLInputElement>(
+      'input[name="export-resolution"][value="64"]',
+    );
+    expect(r64?.checked).toBe(true);
+  });
+
+  it('selecting an HD resolution shows the modded-only help note', () => {
+    render(true);
+    expect($('export-hd-note')).toBeNull();
+    act(() => {
+      ($('export-resolution-256') as HTMLLabelElement).click();
+    });
+    expect($('export-hd-note')).not.toBeNull();
+  });
+
+  it('switching back to 64 hides the help note', () => {
+    render(true);
+    act(() => {
+      ($('export-resolution-512') as HTMLLabelElement).click();
+    });
+    expect($('export-hd-note')).not.toBeNull();
+    act(() => {
+      ($('export-resolution-64') as HTMLLabelElement).click();
+    });
+    expect($('export-hd-note')).toBeNull();
+  });
+
+  it('filename preview appends -{size} when a non-64 resolution is picked', () => {
+    render(true);
+    // Default 64: no suffix.
+    expect($('export-filename-preview')?.textContent).toBe(
+      'skin-classic-stub.png',
+    );
+    // Pick 128.
+    act(() => {
+      ($('export-resolution-128') as HTMLLabelElement).click();
+    });
+    expect($('export-filename-preview')?.textContent).toBe(
+      'skin-classic-stub-128.png',
+    );
+  });
+
+  it('Export at 256 passes { resolution: 256 } to exportLayersToBlob', async () => {
+    const onClose = vi.fn();
+    render(true, onClose);
+    act(() => {
+      ($('export-resolution-256') as HTMLLabelElement).click();
+    });
+    await act(async () => {
+      ($('export-submit') as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(exportMod.exportLayersToBlob).toHaveBeenCalledTimes(1);
+    expect(exportMod.exportLayersToBlob).toHaveBeenCalledWith(
+      expect.any(Array),
+      { resolution: 256 },
+    );
+    expect(exportMod.downloadBlob).toHaveBeenCalledWith(
+      expect.any(Blob),
+      'skin-classic-stub-256.png',
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Re-opening the dialog resets the resolution to 64 (not sticky)', () => {
+    const onClose = vi.fn();
+    render(true, onClose);
+    act(() => {
+      ($('export-resolution-512') as HTMLLabelElement).click();
+    });
+    expect(
+      document.querySelector<HTMLInputElement>(
+        'input[name="export-resolution"][value="512"]',
+      )?.checked,
+    ).toBe(true);
+    // Close, re-open.
+    render(false);
+    render(true, onClose);
+    expect(
+      document.querySelector<HTMLInputElement>(
+        'input[name="export-resolution"][value="64"]',
+      )?.checked,
+    ).toBe(true);
   });
 
   // ── Unit 3: guardrail branch ──

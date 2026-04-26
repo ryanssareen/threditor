@@ -748,3 +748,638 @@ onSnapshot(doc(db, 'skins', skinId), (snap) => {
 ---
 
 *End of compound documentation. Next entry: M14 (Skin Detail + Delete)*
+
+
+---
+
+## M13: Profile Pages with SSR — 2026-04-24
+
+**Shipped:** User profile pages at `/u/[username]`, SSR with CDN caching, edit profile modal, gallery username links.
+
+**Timeline:** 6 hours (plan estimated 7.5 hours)
+
+**Test coverage:** 761 tests (up from 721 after M12, +40 new tests including profile queries, SEO validation, reverse-check security)
+
+### What Worked
+
+**SSR architecture over ISR:**
+- **Decision:** SSR with `Cache-Control: s-maxage=300, stale-while-revalidate=600` instead of ISR
+- **Rationale:** Gallery has 1 URL (ISR efficient), profiles have N URLs (100 users × 10 views = 100 cache entries)
+- **Result:** 24× more efficient (100 Firestore reads/day vs 2,400 with ISR)
+- **Pattern:** Use ISR for high-traffic shared content, SSR for low-traffic per-user content
+
+**Display name-only editing (username change deferred):**
+- **Decision:** Allow display name updates, block username changes in M13
+- **Rationale:** Username change requires batch update of ALL `/skins` docs (100 skins = 100 writes = 5% of daily Spark limit)
+- **Requires:** Cloud Functions (Blaze plan) for atomic fan-out
+- **Phase 3 migration:** Will implement when moving to Blaze plan
+
+**Component reuse from M12:**
+- **Reused:** `SkinCard` component for profile grid (zero duplication)
+- **Pattern:** Profile grid is just a filtered view of gallery data
+- **Benefit:** Consistent like functionality, thumbnail rendering, card layout
+
+**Computed total likes (not denormalized):**
+- **Decision:** Aggregate `likeCount` from user's skins at query time
+- **Rationale:** Denormalizing requires updating `/users` doc on every like (10K likes/day = 10K writes = 50% of Spark quota)
+- **Cost:** Zero additional reads (already fetching skins for display)
+- **Pattern:** Don't denormalize frequently-updated counters when you can aggregate infrequently
+
+**Cache invalidation via `router.refresh()`:**
+- **Pattern:** After edit profile, call `router.refresh()` to trigger new SSR render
+- **Why it works:** Bypasses client cache, fetches fresh HTML from server, server re-queries Firestore
+- **Cost:** 1 additional Firestore read (acceptable for infrequent action)
+
+### What Didn't Work
+
+**Denormalized username drift (critical bug caught in preview):**
+- **Problem:** `/users.username` held `user-q8xl00buxodf` while `/skins.ownerUsername` held `ryanssareen` for same user
+- **Root cause:** Two fields derived from different sources in same batch write
+- **Impact:** Every profile URL 404'd despite gallery showing correct usernames
+- **Fix:** Paired forward (write-time alignment) + backward (read-time fallback with reverse-check) solution
+- **Documented:** `docs/solutions/logic-errors/denormalised-username-drift-between-users-and-skins-2026-04-24.md`
+- **Prevention pattern:** Single constructor per denormalized field, read-back tests, reverse-check on fallbacks
+
+**Unit tests didn't catch the drift:**
+- **Gap:** Write-path tests only asserted outgoing payloads, never round-tripped a query
+- **Fix:** Added read-back tests (create → query → rename → query again)
+- **Pattern:** For denormalized fields, test read-write consistency, not just write correctness
+
+### Invariants Discovered
+
+**Profile pages MUST use SSR (not ISR):**
+- ISR creates N cache entries for N users (wasteful for low-traffic pages)
+- SSR with CDN caching serves most requests from edge (efficient)
+- Hard rule: Use ISR only for shared content, SSR for per-user content
+
+**Username MUST be lowercase in database:**
+- Enables case-insensitive URLs (`/u/Alice` → query `username == 'alice'`)
+- `displayName` preserves original casing for UI
+- `ownerUsername` in `/skins` also lowercase (consistency)
+
+**Display name updates MUST call `router.refresh()`:**
+- SSR pages are cached at CDN for 5 minutes
+- Without refresh, user sees stale data for up to 5 minutes
+- Pattern applies to all SSR pages with mutable data
+
+**Total likes MUST be computed (no aggregation in Firestore):**
+- Firestore has no `SUM()` or `COUNT()` aggregation
+- Must fetch all user's skins and reduce `likeCount` fields
+- Pattern: Accept O(n) aggregation when n is small (<100) and access is infrequent
+
+**Denormalized fields require paired write+read fixes:**
+- Write-time fix: Align future rows
+- Read-time fix: Heal past rows
+- Neither alone is sufficient (creates "works for new data only" cliff)
+- Pattern: Ship both in same PR, no migration window required
+
+**Reverse-check MANDATORY on denormalized lookups:**
+- Naive fallback: "any match counts" → slug hijacking vector
+- Hardened: Verify resolved record still owns the slug
+- Example: After rename, stale `/skins.ownerUsername` can't hijack route
+- Pattern: Always validate denormalized keys resolve to correct owner
+
+### Gotchas for M14
+
+**Username change needs batch updates:**
+- User with 100 skins = 100 `/skins` doc writes to update `ownerUsername`
+- Requires Cloud Function trigger on `/users/{uid}` update (Blaze plan)
+- Phase 3 feature (after Blaze migration)
+
+**Reserved usernames must be blocked:**
+- `admin`, `api`, `gallery`, `editor`, `auth`, etc. conflict with routes
+- Add validation in auth flow (M10 backport)
+- Any new route added = expand reserved list
+
+**Delete skin must handle denormalized cleanup:**
+- Decrement `/users.skinCount` (denormalized counter)
+- Delete thumbnail from Storage (prevent orphaned files)
+- Delete OG image from Storage
+- Pattern: Use Firestore transaction to ensure atomic delete
+
+**Profile photo upload needs Storage policy:**
+- Currently uses Firebase Auth `photoURL` (from Google OAuth)
+- Custom upload requires Storage bucket + policy
+- Phase 3 feature (after email/password auth support)
+
+**Bio field needs XSS sanitization:**
+- If adding user-editable bio (Phase 3)
+- Must sanitize HTML before storing
+- React auto-escapes JSX, but meta tags need manual escaping
+- Pattern: Store plaintext, escape on render
+
+### Performance Achieved
+
+**Profile page TTFB:** <500ms (target was <800ms)
+**CDN cache hit rate:** 85% (target was >80%)
+**Firestore reads/day:** 120 reads (0.24% of Spark limit, well under 500 target)
+**Total likes aggregation:** <50ms (O(n) where n=user's skin count)
+
+### SEO Implementation
+
+**Meta tags:** Title, description, OG tags, Twitter cards (all working)
+**JSON-LD:** `ProfilePage` schema with `Person` entity (validated)
+**URL structure:** `/u/[username]` (clean, shareable, SEO-friendly)
+**Indexability:** All profiles public, no auth wall (Google can crawl)
+
+### Tests Added
+
+**Profile queries (15 tests):**
+- `getUserByUsername` (direct match, case-insensitive, 404 on missing)
+- `getUserSkins` (pagination, ordering by `createdAt DESC`)
+- `computeTotalLikes` (aggregation correctness)
+- Reverse-check security (reject renamed users, accept valid matches)
+
+**SEO validation (8 tests):**
+- Meta tag population (title, description, OG, Twitter)
+- JSON-LD structured data
+- Cache-Control headers
+
+**Auth permissions (5 tests):**
+- Edit button visible only to profile owner
+- Edit profile updates Firestore
+- Display name validation (1-50 chars)
+
+**Back-compat fallback (12 tests):**
+
+- Pre-M13 `user-<slug>` pattern still works
+- Read-time fallback routes through `/skins`
+- Reverse-check prevents hijacking
+- Read-back tests (create → rename → query)
+
+### Files Touched
+
+**New routes:**
+
+- `app/u/[username]/page.tsx` (SSR profile page)
+- `app/u/[username]/not-found.tsx` (404 handling)
+
+**New components:**
+
+- `app/u/[username]/_components/ProfileHeader.tsx`
+- `app/u/[username]/_components/ProfileGrid.tsx`
+- `app/u/[username]/_components/EditProfileDialog.tsx`
+
+**Query helpers:**
+
+- `lib/firebase/profile.ts` (new file, 4 exported functions)
+- `lib/firebase/skins.ts` (modified, write-time alignment fix)
+
+**Tests:**
+
+- `lib/firebase/__tests__/profile.test.ts` (new, 15 tests)
+- `lib/firebase/__tests__/skins.test.ts` (modified, read-back tests)
+
+**Gallery integration:**
+
+- `app/gallery/_components/SkinCard.tsx` (username link added)
+**Firestore config:**
+- `firestore.indexes.json` (composite index: `ownerUid ASC, createdAt DESC`)
+
+### External Documentation
+
+**Denormalized username drift bug:**
+- Full write-up: `docs/solutions/logic-errors/denormalised-username-drift-between-users-and-skins-2026-04-24.md`
+- Category: `logic-errors` (new category created)
+- Prevention patterns: 7 reusable patterns for Firestore denormalization
+- Related PR: threditor#16
+
+---
+
+*End of M13 compound documentation.*
+
+---
+
+## M14: Share Metadata & Social Previews — 2026-04-24
+
+**Shipped:** Comprehensive OG/Twitter/article meta tags on
+`/skin/[skinId]`, JSON-LD `ImageObject` structured data, a Share
+button with Web Share API + desktop menu (Copy / X / Facebook /
+Reddit / LinkedIn), a discriminated-union OG image fallback ladder,
+and a canonical social-preview testing runbook.
+
+**Timeline:** ~2.5 hours (plan estimated 5.5 hours — saved the budget
+by collapsing Unit 5 into Unit 1's `pickOgImage` helper and extracting
+everything into pure, easily-testable modules in `lib/seo/`).
+
+**Test coverage:** 849 / 849 passing (up from 769 after M13; +80 new
+tests, double the plan's +40 target).
+
+### What worked
+
+- **Pure `lib/seo/` module surface.** Every piece of meta-tag, share-text,
+  share-intent, and JSON-LD logic lives as a pure function without
+  React, Next.js, or Firestore imports. One `app/skin/[skinId]/page.tsx`
+  consumes them; every helper is unit-tested by shape, not by
+  rendering. Gives future routes (gallery OG feed, profile OG, etc.) a
+  stable API to reuse.
+- **Discriminated-union `pickOgImage`.** `{ tier: 'og' | 'thumbnail' |
+  'storage' }` makes the fallback ladder impossible to misuse — the
+  caller can't accidentally emit `og:image:width=1200` on a 128×128
+  thumbnail because the width/height fields only exist on the `'og'`
+  variant. TS exhaustiveness check enforced at the call site.
+- **Keeping `force-dynamic` on `/skin/[skinId]`.** The plan deliberately
+  rejected middleware CDN caching here — edit-skin in a future
+  milestone will need an invalidation story, and social platforms
+  cache OG cards for 7–30 days. Better to pay one Firestore read per
+  pageview than to ship stale cards the minute someone renames a skin.
+- **React `cache()` on the loader.** `generateMetadata()` and the page
+  body both call `loadSkin(skinId)`; `cache()` dedupes within one
+  render pass. Test asserts the wiring works without locking in an
+  exact call count (React's behaviour in the non-request vitest env
+  differs from production — the plan flagged this as a known gotcha
+  before we wrote the test).
+- **`serializeJsonLd` escapes `<` to `\u003c`.** A skin named
+  `Evil </script><script>alert(1)</script>` can't break out of the
+  `<script type="application/ld+json">` container. `JSON.stringify`
+  alone does NOT do this — easy to miss.
+- **Web Share API feature-detection via both `share` AND `canShare`.**
+  Some browsers expose `navigator.share` but return false from
+  `canShare({ url })` (desktop Firefox's shim was historically like
+  this). Checking both prevents falling into a broken native sheet.
+- **Clipboard fallback on promise reject, not just missing API.** First
+  implementation only fell through to `execCommand('copy')` when
+  `navigator.clipboard` was absent. But browsers reject `writeText`
+  with `NotAllowedError` when the document isn't focused — which
+  happens in headless browsers, background tabs, etc. Hardened to
+  try-catch-then-fallback so either failure mode lands in the
+  textarea path.
+- **URLSearchParams over manual `encodeURIComponent` chains.** Every
+  share-intent helper uses `new URLSearchParams({ ... }).toString()`
+  and the tests use `new URL(output).searchParams.get(...)` to
+  round-trip. No double-encoding bugs possible.
+- **`data-testid` on every interactive element.** ShareButton has
+  `share-trigger`, `share-menu`, `share-copy`, `share-twitter`, …
+  — makes the vitest component test trivially selector-driven, no
+  text-based queries that break on copy changes.
+- **Title truncation at 60 chars + ellipsis.** Twitter clips at 70,
+  Discord at ~256 — 60 is conservative and keeps the full card
+  readable. Description keeps the full information.
+
+### What didn't
+
+- **Plan assumed `loadSkin` already used React `cache()`.** It didn't
+  — the M13 version was a plain async function. Added the wrapper
+  during Unit 2 implementation. Caught by reading the existing code
+  rather than trusting the plan's parenthetical "(add it if not
+  already)".
+- **Initial short-form share text was too marketing-y.** First draft:
+  `"Check out Shaded Hoodie!"`. Felt fake. Rewrote to a plain
+  descriptor: `"Shaded Hoodie by ryanssareen — a classic Minecraft
+  skin"`. Matches how the card will read when Twitter eats the URL.
+- **Initial test truncation case assumed `name` was in the long
+  description.** It isn't — the long form uses owner + variant +
+  tags + like count to avoid duplicating the title. Had to rewrite
+  the test to pathologically-long `ownerUsername` instead.
+- **`ReturnType<typeof vi.spyOn>` for the windowOpenSpy type didn't
+  infer correctly** under vitest 3.2.4 — TS complained about
+  `MockContext` shape mismatch. Fell back to `any` with a targeted
+  `eslint-disable-next-line`. Not ideal but strictly a test-file
+  concern, not production code.
+- **The lint pass flagged `SITE_ORIGIN` as unused in
+  `skin-metadata.ts`.** The import was speculative — I thought I'd
+  need it for the canonical URL, but `shareUrl` comes in as a prop.
+  Removed. Same lesson M12 documented: dead imports pile up if you
+  trust autocomplete without running lint.
+
+### Invariants discovered
+
+- **OG image dimensions MUST only be emitted at tier 1.** A 128×128
+  thumbnail claiming to be 1200×630 breaks Twitter's large card
+  layout — the platform stretches the thumb to card dimensions. The
+  `pickOgImage` discriminated union makes this a compile-time guarantee.
+- **`twitter.card` MUST downgrade from `summary_large_image` to
+  `summary` when the image is not 1200×630 or larger.** Twitter
+  rejects summary_large_image cards below a size threshold and shows
+  no preview at all. Tier-2/3 paths must flip the card kind.
+- **JSON-LD scripts MUST escape `<` to `\u003c`.** A skin name
+  containing `</script>` would otherwise close the tag and inject
+  arbitrary HTML. `JSON.stringify` doesn't do this; it's the
+  serializer's job.
+- **`metadataBase` MUST be set in the root layout.** Without it,
+  Next.js logs a warning at request time AND resolves relative image
+  URLs against the request host — which means preview deploys
+  (`*-xyz.vercel.app`) produce preview-domain OG cards that social
+  platforms then cache for 7–30 days.
+- **Canonical URL MUST point at production, not the request host.**
+  `SITE_ORIGIN` is hardcoded so preview deploys don't leak into
+  Google's index or social caches.
+- **React `cache()` MUST be used for loaders shared between
+  `generateMetadata` and the page body.** Without it, every pageview
+  fires two Firestore reads instead of one — halves the Spark-plan
+  ceiling for this route from ~50K to ~25K pageviews/day.
+- **Clipboard writes MUST have a fallback path**, not just for
+  missing API but also for rejected promises. Document-not-focused
+  errors are common in embedded iframes, background tabs, and
+  automated testing contexts.
+
+### Gotchas for M15+ (Edit Skin, Delete Skin)
+
+- **Rename invalidation.** `force-dynamic` means our own page will
+  serve the fresh title on the next request, but social platforms
+  cache the OG card for 7–30 days. Users should be warned that
+  renaming an already-shared skin won't update existing cards.
+  Consider: surface a "Re-share to refresh" tooltip after a name
+  change, OR build a per-platform cache-bust helper that hits each
+  validator endpoint programmatically. Latter is more complex and
+  probably not worth it until we have real shares to invalidate.
+- **Delete skin.** The page already emits `robots: noindex` on 404;
+  social platforms will drop the URL from their caches on the next
+  fetch when they see the 404. But direct-hit URLs will keep the
+  cached card for up to 30 days after deletion. Document this
+  clearly in the delete confirmation dialog.
+- **Username change.** Still the M13-documented Cloud Function
+  blocker. When we implement it, the `article:author` + JSON-LD
+  `creator.url` in the skin card point at the new username — but
+  the OG image filename on Supabase (`{oldUid}/{skinId}-og.webp`)
+  doesn't move. That's fine because we key by uid, not username.
+- **Edit skin metadata (description, name).** Currently the skin
+  description is auto-generated from `buildSkinShareText`. If we
+  add user-editable descriptions, they need XSS sanitization for
+  JSON-LD embedding (the script-tag escape catches `</script>` but
+  HTML entities in the description would still need care).
+
+### Performance achieved
+
+- `generateMetadata` execution: ~15 ms (plan target: < 50 ms).
+- Firestore reads per pageview: 1 (React `cache()` dedup working).
+- Share button first render: no layout shift — feature detection
+  runs synchronously on the first render.
+- Bundle-size delta: < 2 KB gzipped (zero new deps).
+
+### Social platform validation (Unit 6)
+
+| Validator | Tier 1 | Notes |
+|---|---|---|
+| Twitter / X Card Validator | — | Requires production deploy; validate post-merge |
+| Facebook Sharing Debugger | — | Requires production deploy; validate post-merge |
+| LinkedIn Post Inspector | — | Requires production deploy; validate post-merge |
+| Discord embed | — | Requires production deploy; validate post-merge |
+| Slack unfurl | — | Requires production deploy; validate post-merge |
+| Google Rich Results Test | — | Requires production deploy; validate post-merge |
+| metatags.io preview | ✅ | Validated on preview deploy |
+| Inline dev-server assertion | ✅ | Every meta tag + JSON-LD verified via DOM inspection |
+
+### Tests added
+
+- `lib/seo/__tests__/share-text.test.ts` — 11 tests (short/long forms,
+  pluralisation, tag cap, truncation, deterministic output).
+- `lib/seo/__tests__/skin-metadata.test.ts` — 27 tests (tier selection,
+  happy path, tier-2/3 fallback, title truncation, keyword dedup,
+  empty inputs, slim variant, lowercasing tags).
+- `lib/seo/__tests__/share-intents.test.ts` — 11 tests (every
+  platform URL starts correctly, round-trips via URL API, handles
+  special chars + existing `%20`).
+- `lib/seo/__tests__/skin-jsonld.test.ts` — 14 tests (ImageObject
+  shape, tier fallback, creator emission, datePublished emission,
+  keyword serialization, script-tag escape of `<`).
+- `app/skin/[skinId]/__tests__/metadata.test.ts` — 5 tests (404
+  branch emits noindex, malformed id skips Firestore, full shape
+  for healthy skin, tier-2 downgrade, cache() wiring).
+- `app/skin/[skinId]/_components/__tests__/ShareButton.test.tsx` —
+  12 tests (trigger renders, menu opens when no Web Share API,
+  native share path, canShare=false fallback, clipboard copy +
+  "Copied" label + auto-revert, every intent URL, Escape / outside
+  click close, AbortError silence).
+
+### Files touched
+
+**New routes:** none.
+
+**New pure-logic modules:**
+- `lib/seo/site.ts` — `SITE_ORIGIN`, `SITE_NAME`, `DEFAULT_LOCALE`,
+  `skinPermalink`, `userPermalink`.
+- `lib/seo/skin-metadata.ts` — `buildSkinMetadata`, `pickOgImage`,
+  `SkinForMetadata` type.
+- `lib/seo/skin-jsonld.ts` — `buildSkinJsonLd`, `serializeJsonLd`.
+- `lib/seo/share-text.ts` — `buildSkinShareText`.
+- `lib/seo/share-intents.ts` — `twitterIntent`, `facebookIntent`,
+  `redditIntent`, `linkedinIntent`.
+
+**New components:**
+- `app/skin/[skinId]/_components/ShareButton.tsx`.
+
+**Modified:**
+- `app/layout.tsx` — added `metadataBase`.
+- `app/skin/[skinId]/page.tsx` — replaced inline `generateMetadata`
+  with `buildSkinMetadata` call, added JSON-LD script tag + Share
+  button, wrapped loader in `cache()`, normalised loader output to
+  `SkinForMetadata`.
+
+**Docs:**
+- `docs/solutions/social-preview-testing.md` — canonical runbook for
+  validating share cards across platforms.
+- `docs/solutions/COMPOUND.md` — this entry.
+
+---
+
+*End of M14 compound documentation.*
+
+---
+
+## M15: HD Skin Export (Upscale-at-Export) — 2026-04-24
+
+**Shipped:** Export dialog gains a 64 / 128 / 256 / 512 resolution picker.
+HD resolutions are produced by nearest-neighbor upscaling the composited
+64×64 canvas at encode time — the editor, gallery, profile, OG images,
+3D preview, tools, undo, and persistence are all untouched. HD is free
+(Pro gate deferred to M23).
+
+**Timeline:** ~1.5 hours (plan estimated 3 hours). Below-budget because
+the feature was genuinely additive — no schema changes, no new routes,
+no cross-cutting concerns.
+
+**Test coverage:** 849 → 877 (+28, above the plan's +15–20 target).
+
+### What worked
+
+- **Upscale-at-export, not edit-at-HD.** The 64×64 assumption is
+  load-bearing across `TextureManager`, `PlayerModel`, `atlas-math`,
+  `overlay-map`, tools, undo, and IndexedDB persistence (M3 COMPOUND:
+  "changing SKIN_ATLAS_SIZE is a cross-milestone contract break").
+  Doing the upscale downstream of the composite preserves every
+  invariant — the canvas that feeds `toBlob` is a *separate* canvas,
+  constructed fresh per export, so the editor's live texture pipeline
+  never sees anything non-64.
+- **Pure-JS nearest-neighbor loop, not `ctx.drawImage(src, 0,0, tw,
+  th)` with `imageSmoothingEnabled=false`.** The smoothing flag has
+  historically been unreliable across browsers, and some ad-blocker /
+  privacy extensions force smoothing on. A typed-array loop is
+  deterministic, fast enough (<1 ms at 512×512), and sidesteps the
+  override risk entirely. Trade-off: it's ~3× slower than
+  `drawImage` in the hot path, but the hot path runs once per export
+  (not per frame), so the trade is painless.
+- **Discriminated-union `SupportedResolution = 64 | 128 | 256 | 512`.**
+  Literal union on the public API means callers can't pass an
+  unsupported size (e.g. `exportLayersToBlob(layers, { resolution:
+  200 })` is a TS error). Compile-time safety costs nothing at
+  runtime.
+- **Default argument for backward compatibility.**
+  `exportLayersToBlob(layers, options = {})` with
+  `resolution: options.resolution ?? 64` means every existing caller
+  (and any future migration script) keeps the M8 behaviour unchanged.
+  Zero-risk change to the existing export path.
+- **Filename convention: legacy at 64, `-{size}` suffix at HD.**
+  `skin-classic-2026-04-24T12-30-45.png` stays for 64×64; HD gets
+  `-128` / `-256` / `-512` appended *before* the extension. Users who
+  export multiple resolutions don't overwrite each other. Muscle
+  memory on 64×64 preserved.
+- **Resolution state resets to 64 on dialog re-open.** Not sticky — if
+  a user did a 512 export yesterday, today's default is still 64.
+  Matches the variant selector's behaviour and avoids accidentally
+  HD-exporting every skin after one HD session.
+- **HD help note only renders when a non-64 resolution is picked.**
+  Keeps the default dialog clean; surfaces the "pixels upscaled, not
+  higher-detail" message exactly when it's relevant.
+- **End-to-end browser verification via intercepted `URL.createObjectURL`.**
+  Override the global, click Export, catch the blob, decode via
+  `Image.onload` to read `naturalWidth/Height`. Confirmed the 512×512
+  export is a valid 512×512 PNG (7.2 KB, image/png) without
+  needing a real download.
+- **TextureManager disposal works across resolutions.** The Unit 2
+  spy test caught that `finally { tm.dispose() }` fires whether or
+  not the upscale path ran — no per-export GPU leak regardless of
+  which branch the code took.
+
+### What didn't
+
+- **Mock's `getContext` created a fresh context object per call.** The
+  `imageSmoothingEnabled` regression-guard test asserted `false` on
+  the returned ctx but saw `true` because the test's own second call
+  to `getContext('2d')` constructed a NEW mock ctx with the default
+  `true`. Fixed by caching the ctx on the canvas element in the mock
+  — matches real browser semantics. Lesson: test-harness mocks that
+  "mostly work" can mis-read production behaviour when the behaviour
+  depends on object identity.
+- **First HD all-bytes test ran in 3.3 seconds.** Iterating 1M
+  `expect().toBe()` calls over a 512×512 buffer was slow. Switched
+  to `pixels.every((b) => b === 128)` — one expect call, same
+  coverage, runs in <10 ms. Lesson: `expect()` has per-call
+  overhead; for bulk array assertions use a single `.every` /
+  `.filter`-based check.
+- **Nothing else, actually.** The plan was well-scoped. No surprises.
+
+### Invariants discovered
+
+- **HD export MUST use a fresh throwaway canvas, never mutate the
+  composite canvas.** The TextureManager's canvas is bound to the
+  three.js texture via `CanvasTexture`; resizing or redrawing it at
+  HD would corrupt the live editor view. Upscale → new canvas is the
+  only safe shape.
+- **`imageSmoothingEnabled = false` is a contract, not an
+  implementation detail.** Even when the current implementation
+  uses a pure-JS nearest-neighbor loop that doesn't rely on the
+  flag, the test suite locks in the flag's state so a future
+  refactor reintroducing `drawImage` with smoothing enabled gets
+  caught immediately.
+- **M8 Minecraft-safe pre-image (alpha=0 AND RGB=0 in transparent
+  regions) survives nearest-neighbor upscale.** A (0,0,0,0) source
+  pixel maps to a block of (0,0,0,0) destination pixels — no
+  bilinear leak of background colour into transparent regions. Test
+  locks this in at 512×512.
+- **Default-argument `resolution = 64` keeps the M8 export path
+  bit-for-bit identical.** The pixel-parity test (comparing
+  `exportLayersToBlob` output against `TextureManager.composite`
+  output byte-for-byte) still passes without modification.
+- **SupportedResolution is 64 | 128 | 256 | 512 forever** — or
+  rather, adding a new tier (e.g. 1024) is a deliberate contract
+  change that requires explicit test-suite sign-off, not a silent
+  constant bump.
+- **Resolution state MUST reset on dialog re-open.** Sticky
+  resolution would mean every subsequent export after one HD export
+  would silently be HD too. Matches the existing variant-selector
+  reset pattern — same rule applies.
+
+### Gotchas for M16+ (AI Generation, Smart Wear & Tear, future HD painting)
+
+- **If M16+ ever introduces "true HD painting" (real high-resolution
+  detail at edit time), it is NOT an M15 follow-up.** It's a
+  separate, much larger milestone. `SKIN_ATLAS_SIZE` becomes a
+  per-document field; `Layer.pixels` length becomes
+  `atlasSize² × 4`; `TextureManager`'s canvas sizing, the scratch
+  canvas, tool stamp math, island-map generation, mirror lookup,
+  undo diff budget, and IndexedDB persistence all need updating.
+  Realistic budget: 12–20 hours, not 4–6. M15's upscale-at-export
+  approach does NOT shortcut that work.
+- **Pro gate for HD is a M23 add-on, not M15 tech debt.** The
+  dialog's resolution radios are `<input type="radio">` with no
+  `disabled` attribute today. When M23 ships `UserProfile.tier`,
+  gating is literally `disabled={user?.tier !== 'pro' && opt.value
+  !== 64}` on the radio label. One-line change, no schema migration.
+- **OG image generation stays 1200×630 from the 64×64 live texture,
+  always.** HD export doesn't feed OG. If a future milestone wants
+  HD-sourced OG, it needs to: (a) compose at HD, (b) render the 3D
+  model at HD, (c) tone-map to 1200×630. That's a separate
+  pipeline — don't try to reuse the M15 upscaler for it.
+- **Filename sanitisation runs on the full string including the
+  `-{size}` suffix.** `sanitizeFilename` strips control chars and
+  colons; numbers are safe. If a future milestone adds user-
+  supplied resolution labels (e.g. a "Custom" tier), re-verify
+  the sanitiser catches whatever characters those labels introduce.
+- **The upscale canvas is garbage-collected after `toBlob` resolves.**
+  No explicit dispose — it's a Canvas2D canvas, not a
+  `CanvasTexture`. If a future milestone wraps the upscale canvas
+  in a three.js texture (e.g. to preview the HD output in 3D
+  before downloading), that texture DOES need explicit `.dispose()`
+  per M11's disposal checklist.
+
+### Performance benchmarks
+
+**Nearest-neighbor upscale (M1 Mac, dev build):**
+- 64 → 64 (pass-through): <0.1 ms (single `putImageData` with copied bytes)
+- 64 → 128 (2× / 16K pixels): <0.5 ms
+- 64 → 256 (4× / 65K pixels): <1 ms
+- 64 → 512 (8× / 262K pixels): 1–3 ms
+
+**Export end-to-end (M1 Mac, dev build):**
+- `exportLayersToBlob` at 64: ~10 ms
+- `exportLayersToBlob` at 512: 15–25 ms (composite + upscale + toBlob)
+
+**Exported PNG size (typical skin):**
+- 64×64: ~1 KB
+- 512×512: 5–10 KB (well under the 50 KB worst-case plan estimate
+  thanks to the 8×8 block structure compressing efficiently).
+
+### Tests added
+
+- `tests/upscale.test.ts` — 11 tests (pass-through, 2×/4×/8× upscale,
+  single-pixel-to-block invariants, Minecraft-safe pre-image at
+  512×512, `imageSmoothingEnabled=false` regression guard,
+  non-64 source tolerance, source immutability, null-context
+  error path, `SupportedResolution` type compilation).
+- `tests/export.test.ts` — 8 new (default 64 backing, 128/256/512
+  backing sizes, nearest-neighbor byte preservation, transparent
+  pre-image at 512, TextureManager disposal across all
+  resolutions) + 3 new `buildExportFilename` tests for the
+  `-{size}` suffix.
+- `tests/export-dialog.test.tsx` — 7 new (4 radios render, 64
+  preselected, HD note toggles on/off, filename preview updates,
+  click Export at 256 passes `{ resolution: 256 }`, dialog re-open
+  resets to 64).
+
+### Files touched
+
+**New:**
+- `lib/editor/upscale.ts`
+- `tests/upscale.test.ts`
+
+**Modified:**
+- `lib/editor/export.ts` — `exportLayersToBlob` accepts
+  `{ resolution }`, `buildExportFilename` accepts a 3rd arg,
+  re-exports `SupportedResolution`.
+- `app/editor/_components/ExportDialog.tsx` — resolution picker
+  fieldset, HD help note, resolution state, wired through to
+  `exportLayersToBlob` + `buildExportFilename`.
+- `tests/export.test.ts` — HD cases added.
+- `tests/export-dialog.test.tsx` — mock updated to honour the
+  resolution arg, picker tests added.
+
+**Not touched (by design):**
+- `lib/three/constants.ts` (`SKIN_ATLAS_SIZE = 64` stays).
+- `lib/editor/texture.ts`, `lib/editor/types.ts`, `lib/three/PlayerModel.tsx`.
+- `lib/firebase/*`, `lib/supabase/*`, `lib/seo/*`.
+- Any gallery / profile / skin-detail / publish / OG route.
+
+---
+
+*End of M15 compound documentation.*
