@@ -44,6 +44,18 @@ const PublishDialog = dynamic(
   { ssr: false },
 );
 
+// M16: lazy-load the AIGenerateDialog. The dialog itself is small
+// but the editor handler (handleAiGenerate below) dynamically imports
+// the codec only when generation succeeds — keeping `lib/ai/skin-codec`
+// off the editor's critical path.
+const AIGenerateDialog = dynamic(
+  () =>
+    import('@/app/_components/AIGenerateDialog').then(
+      (m) => m.AIGenerateDialog,
+    ),
+  { ssr: false },
+);
+
 export function EditorLayout() {
   const variant = useEditorStore((s) => s.variant);
   const layers = useEditorStore((s) => s.layers);
@@ -93,6 +105,8 @@ export function EditorLayout() {
   // M8 Unit 2: export dialog open state.
   const [exportOpen, setExportOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
+  // M16: AI generation dialog open state.
+  const [aiOpen, setAiOpen] = useState(false);
 
   // M8 Unit 7/8: first-paint sequence.
   //
@@ -598,6 +612,131 @@ export function EditorLayout() {
     [bundle, variant],
   );
 
+  // M16 Unit 6: AI generation handler.
+  //
+  // Pipeline:
+  //   1. Fetch /api/ai/generate with Bearer token.
+  //   2. Parse `{ palette, rows }`, decode to a 16384-byte buffer.
+  //   3. Build a new Layer named `AI: <prompt-truncated>`.
+  //   4. addLayer + push 'layer-add' undo command + markEdited.
+  //
+  // Errors are translated to user-facing messages the dialog renders.
+  // The codec lives in lib/ai/skin-codec.ts which is a pure module
+  // (no `'server-only'`); importing it dynamically here keeps it off
+  // the editor's critical path.
+  const handleAiGenerate = useCallback(
+    async (prompt: string): Promise<void> => {
+      const { getFirebase } = await import('@/lib/firebase/client');
+      const { auth } = getFirebase();
+      const currentUser = auth.currentUser;
+      if (currentUser === null) {
+        throw new Error(
+          'You are not signed in. Click Sign In, then try again.',
+        );
+      }
+      const idToken = await currentUser.getIdToken(false);
+
+      // Client-side timeout slightly higher than the server's 30s cap
+      // so the server's typed `timeout` response wins the race.
+      const res = await fetch('/api/ai/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ prompt }),
+        credentials: 'include',
+        signal: AbortSignal.timeout(45_000),
+      });
+
+      if (!res.ok) {
+        let payload: Record<string, unknown> = {};
+        try {
+          payload = (await res.json()) as Record<string, unknown>;
+        } catch {
+          // body wasn't JSON
+        }
+        const code = typeof payload.error === 'string' ? payload.error : '';
+        // User-facing copy. Granular telemetry in DevTools console.
+        let msg: string;
+        switch (code) {
+          case 'rate_limited': {
+            const reason = payload.reason;
+            const resetAt =
+              typeof payload.resetAt === 'number' ? payload.resetAt : 0;
+            const mins = Math.max(
+              1,
+              Math.ceil((resetAt - Date.now()) / 60000),
+            );
+            if (reason === 'day') {
+              msg = "You've hit today's generation limit. Try again tomorrow.";
+            } else if (reason === 'aggregate') {
+              msg = 'AI is busy. Try again in a few minutes.';
+            } else {
+              msg = `Rate-limited — try again in about ${mins} minute${
+                mins === 1 ? '' : 's'
+              }.`;
+            }
+            break;
+          }
+          case 'prompt_invalid':
+            msg = 'Try a different prompt.';
+            break;
+          case 'generation_invalid':
+            msg = "The model couldn't make a valid skin. Try a different prompt.";
+            break;
+          case 'unauthorized':
+            msg = 'Please sign in again.';
+            break;
+          case 'timeout':
+            msg = 'The model took too long. Try a shorter prompt.';
+            break;
+          case 'aborted':
+            msg = 'Generation was cancelled.';
+            break;
+          case 'service_paused':
+            msg = 'AI is paused right now. Check back soon.';
+            break;
+          default:
+            msg = `Generation failed (HTTP ${res.status}). Try again.`;
+        }
+        console.error('ai/generate error:', payload);
+        throw new Error(msg);
+      }
+
+      const data = (await res.json()) as {
+        palette: string[];
+        rows: [number, number][][];
+      };
+
+      // Codec is a pure module — safe to dynamically import here.
+      const { decode } = await import('@/lib/ai/skin-codec');
+      const pixels = decode(data);
+
+      const id =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `layer-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+      const truncatedName = prompt.length > 30 ? prompt.slice(0, 30) : prompt;
+      const layer: Layer = {
+        id,
+        name: `AI: ${truncatedName}`,
+        visible: true,
+        opacity: 1,
+        blendMode: 'normal',
+        pixels,
+      };
+
+      const insertedAt = layersRef.current.length;
+      useEditorStore.getState().addLayer(layer);
+      handleLayerUndoPush({ kind: 'layer-add', layer, insertedAt });
+      // M7 invariant: any apply path must mark edited so the
+      // first-paint sequence cancels and saving picks up the change.
+      useEditorStore.getState().markEdited();
+    },
+    [handleLayerUndoPush],
+  );
+
   // M10: h-dvh - 3.5rem leaves 56px (h-14) at the top for the fixed
   // EditorHeader, so the 2D + 3D + sidebar flex layout fits in the
   // remaining viewport.
@@ -666,6 +805,7 @@ export function EditorLayout() {
           onUndo={handleUndo}
           onRedo={handleRedo}
           onOpenExport={() => setExportOpen(true)}
+          onOpenAi={() => setAiOpen(true)}
         />
       </aside>
 
@@ -681,6 +821,13 @@ export function EditorLayout() {
         isOpen={publishOpen}
         onClose={() => setPublishOpen(false)}
         onPublish={handlePublish}
+      />
+
+      {/* M16 Unit 6: AI generation dialog — lazy-loaded. */}
+      <AIGenerateDialog
+        isOpen={aiOpen}
+        onClose={() => setAiOpen(false)}
+        onGenerate={handleAiGenerate}
       />
     </div>
     </>

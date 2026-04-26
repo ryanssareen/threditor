@@ -74,5 +74,50 @@ service cloud.firestore {
                     && resource.data.uid == request.auth.uid;
       allow update: if false;
     }
+
+    // ── /aiGenerations/{docId} — M16 AI generation logs ─────────────
+    //
+    // Server-only. Written by the Admin SDK from /api/ai/generate.
+    // Holds the verbatim prompt (with light PII redaction), token
+    // counts, costEstimate, and ipHash for retrospective abuse review.
+    // TTL policy on `expireAt` (now + 90 days) sweeps stale docs.
+    //
+    // Admin SDK bypasses these rules; the deny-all stance is the
+    // belt-and-suspenders guarantee that no client code can read prompt
+    // text or co-locate uid+ipHash for retroactive deanonymization.
+    match /aiGenerations/{docId} {
+      allow read, write: if false;
+    }
+
+    // ── /rateLimits/{docId} — M16 per-user / per-IP rate buckets ────
+    //
+    // Doc-id conventions:
+    //   {uid}_{YYYYMMDDHH}            — per-user hourly bucket
+    //   {uid}_day_{YYYYMMDD}          — per-user daily bucket
+    //   ip_{ipHash}_{YYYYMMDDHH}      — per-IP hourly bucket
+    //
+    // Counters use FieldValue.increment inside db.runTransaction so
+    // concurrent generations cannot race past the gate. TTL policy on
+    // `expireAt` sweeps stale docs (now + 26h covers both hour and day
+    // buckets with buffer).
+    //
+    // Server-only — admin SDK bypasses; clients denied so they cannot
+    // spoof a doc ID and reset their own counter.
+    match /rateLimits/{docId} {
+      allow read, write: if false;
+    }
+
+    // ── /aiConfig/{docId} — M16 aggregate-cost kill switch ───────────
+    //
+    // Single doc /aiConfig/global with shape:
+    //   { enabled: boolean, todayTokens: number, todayDate: 'YYYYMMDD' }
+    //
+    // Read inside the rate-limit transaction. If `enabled === false` OR
+    // `todayTokens > AGGREGATE_TOKEN_CAP`, the route returns 503 with
+    // no per-user counter increment. Operator flips `enabled` in
+    // Firebase Console for sub-minute incident response.
+    match /aiConfig/{docId} {
+      allow read, write: if false;
+    }
   }
 }

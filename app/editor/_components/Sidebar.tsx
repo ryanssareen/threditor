@@ -28,6 +28,8 @@ type SidebarProps = {
   onRedo?: () => void;
   /** M8 Unit 2: open the export dialog. */
   onOpenExport?: () => void;
+  /** M16 Unit 6: open the AI generation dialog. */
+  onOpenAi?: () => void;
 };
 
 export function Sidebar({
@@ -40,6 +42,7 @@ export function Sidebar({
   onUndo,
   onRedo,
   onOpenExport,
+  onOpenAi,
 }: SidebarProps) {
   return (
     <div
@@ -61,6 +64,17 @@ export function Sidebar({
       <BrushSizeRadio />
       <ColorPicker />
       <LayerPanel onUndoPush={onLayerUndoPush} />
+      {onOpenAi !== undefined && (
+        <button
+          type="button"
+          data-testid="sidebar-ai-button"
+          aria-label="Generate skin with AI"
+          onClick={onOpenAi}
+          className="rounded-sm border border-ui-border bg-ui-base px-3 py-2 font-mono text-sm font-semibold text-text-primary hover:border-accent hover:text-accent"
+        >
+          ✨ AI
+        </button>
+      )}
       {onOpenExport !== undefined && (
         <button
           type="button"
