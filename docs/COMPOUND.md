@@ -875,3 +875,109 @@
 - `lib/firebase/uuid-v7.ts` — M12's "newest first" gallery query can `orderBy(documentId(), 'desc')` instead of `orderBy('createdAt', 'desc')` and skip the createdAt composite index, thanks to v7's time-sortable prefix.
 - `app/_components/PublishDialog.tsx` + `AuthDialog.tsx` + `ExportDialog.tsx` + `TemplateBottomSheet.tsx` — four hand-rolled ARIA dialogs now. Threshold for extracting a shared hook (documented as 3 in M10 §Gotchas) is exceeded; the next UI milestone should consider a `useFocusTrap()` + `useDialogKeybindings()` pair.
 - M11 plan's §Risks row 4 (`CreatedAt` overwrite on merge) — pattern is documented here; future milestones that use merge on /users doc fields should consider similar pre-read guards.
+
+## M16: AI Skin Generation — 2026-04-25
+
+### What worked
+
+- **Palette + per-row RLE encoding cut output tokens by ~15×.** A naive 4096-cell `[r,g,b,a]` JSON output is ~80K tokens (over the 32,768 max-completion cap, ~$0.06/gen). Palette-of-≤16-colors with per-row RLE produces ~1.5K-3K output tokens and round-trips losslessly to a `Uint8ClampedArray`. The decoder validates the entire shape BEFORE allocating the 16384-byte output buffer, which makes attacker-crafted Groq responses incapable of producing partial-write state.
+- **`lib/ai/types.ts` as the type-only seam.** Pure types module with zero runtime exports. Both client (the editor handler that decodes a successful response into a Layer) and server (the route + Groq wrapper) import `AISkinResponse` from here without dragging the codec, the SDK, or admin code into the client bundle. Verified: `groq-sdk` and `lib/ai/groq.ts` do not appear in any `.next/static/chunks/*.js` after build.
+- **Dynamic `await import('groq-sdk')` inside the route handler.** Defends against accidental client-bundle leak via shared-module imports — even if a future refactor accidentally re-exports a Groq type from a shared module, the runtime code never reaches a static-analysis path that could land in the client. One-time-per-cold-start cost (~200ms).
+- **Firestore-backed transactional rate limiter.** Three buckets (per-user-hour, per-user-day, per-IP-hour) plus the aggregate-cost kill switch in `/aiConfig/global`, all checked + incremented in a single `db.runTransaction`. In-memory `Map<uid, count>` would be unsound on Vercel (cold starts, multiple instances). The transaction makes the gate atomic — concurrent requests cannot both observe `count: 4` and both increment to `count: 5`.
+- **Slot-burn-with-pre-stream-refund policy.** The slot is burned on validation failures (LLM was billed), Groq rate-limit, auth, upstream, timeout-after-stream-started. The single refund case is `GroqAbortedError` with `streamStarted: false` (Groq billed nothing). Refunding model-output failures would let an attacker craft prompts that reliably fail validation and effectively get unlimited paid LLM calls.
+- **Aggregate kill switch read inside the same transaction as per-user gating.** Single doc `/aiConfig/global` with `{ enabled: boolean, todayTokens: number, todayDate: 'YYYYMMDD' }`. If `enabled === false` OR `todayTokens > 80_000` (well below Groq free-tier 100K TPD), the route returns 503 `service_paused` without any per-user counter increment. Operator flips `enabled` in Firebase Console for sub-minute incident response (no code deploy). The date field self-resets via "if `todayDate !== today`, set fresh" inside `bumpAggregateTokens`.
+- **Shape-only env diagnostic for `GROQ_API_KEY`.** Same discipline as `FIREBASE_ADMIN_PRIVATE_KEY` (commit `de8f76f`): when missing/malformed, the 500 body includes `{ debug: { envKeyShape: { present, length, prefix: first-4-chars } } }`. The 4-char prefix confirms a Groq-shaped key (`gsk_`) without leaking any organization-keyed entropy.
+- **Validation order: shape → palette → rows → allocate.** All structural checks complete BEFORE any byte is written. Even attacker-crafted responses (negative palette index, oversized run, malformed hex) throw during validation; the output buffer is never partially populated. Eliminates out-of-bounds-write surface entirely.
+- **PII redaction before log write, not after read.** `redactPrompt` collapses email/phone/cc patterns into `[REDACTED:*]` before the doc is written. Defense-in-depth even though the collection denies all client reads — keeps PII off backups and operator-side queries by default.
+- **`ipHash` lives only on rate-limit docs, not on `/aiGenerations`.** TTL-sweeps within ~26h. Co-locating `uid` and `ipHash` on the 90-day-retained logs would enable retroactive deanonymization if `IP_HASH_SALT` ever leaks.
+
+### What didn't
+
+- **Initial cost estimate (~$0.0004/gen) was off by 7×.** Real palette+RLE encoding (~500 input + ~3K output tokens) costs ~$0.0027/gen. At 100 active users averaging ~3 gens/day, monthly cost is ~$24 — exceeds the original "$15/year" framing. Resolution: the success criterion now tracks weekly aggregate cost via `/aiGenerations.costEstimate`; if month-over-month projection exceeds $50, lower the per-user cap from 5/hr → 3/hr. The "free forever" milestone-posture line is preserved as aspirational at low scale; the operative budget is $50/month.
+- **`AbortSignal.any` is the cleanest combine pattern but isn't on every Node runtime.** Wrote a manual fan-in fallback. On Node 20+ (project requirement) the native path runs. Not technically a "didn't work" — just a portability headache for tests, where the polyfill needed `addEventListener('abort')` semantics that jsdom and node both support.
+- **The plan's first prompt-validation regex was over-strict.** Original draft was a printable-ASCII + BMP allowlist that incorrectly rejected emoji and supplementary-plane characters (legitimate creative prompts). Flipped to a deny-list using Unicode property escapes: `/[\p{Cc}\p{Cf}\p{Co}\p{Cn}]/u` (control bytes, format/bidi overrides, private-use, unassigned). Now `🦄`, `🐉`, `忍者`, `café` all pass while bidi-overrides and control bytes are still rejected.
+- **Day-cap test loop tripped over hour-of-day arithmetic.** `setUTCHours(29)` rolls Date to next day with hour 5 — naively iterating `h = 0..29` spreads 24 hits across day 1 and 6 across day 2, never tripping the day cap. Fix: 5 hits each in 6 distinct hours (still on day 1) = 30 = cap, then probe with a 7th distinct hour. Lesson: when constructing Date sequences in tests, prefer explicit `setUTCHours(h, m, s, ms)` over `+=` arithmetic.
+
+### Invariants discovered
+
+- **Server-only module hierarchy now has a 3rd tier:** type-only seam → server-only logic → admin-only routes. `lib/ai/types.ts` is the seam; `lib/ai/{groq,prompt,rate-limit,skin-codec}.ts` and `lib/firebase/ai-logs.ts` are server-only logic; `app/api/ai/generate/route.ts` is the route. Any future feature with a server-side third-party API call should follow this layering: client-importable types in a `types.ts` file, runtime code under `import 'server-only'`, route handler ties them together.
+- **Doc-IDs encode actor + window so rules can be deny-all.** `/rateLimits/{uid}_{YYYYMMDDHH}` and `/rateLimits/ip_{ipHash}_{YYYYMMDDHH}` make spoofing impossible at the rules level — clients are denied entirely, and even if the rules were ever weakened, the doc ID itself encodes the only legitimate writer's uid/IP. Pattern transfers to any future rate-limited endpoint.
+- **`db.runTransaction` is mandatory for paid-endpoint rate gates, not `FieldValue.increment` alone.** M11 documented `FieldValue.increment` as lock-free, which is true for *converging* counters where eventual consistency is fine. But a rate-limit *gate* needs read-then-check-then-write atomicity — two concurrent reads-then-increments can race past `count: 4 → count: 5`. Use `runTransaction` whenever the next write depends on the read.
+- **TTL policy on `expireAt: Timestamp` is mandatory before launch.** Without it, `/rateLimits` (high-frequency writes) and `/aiGenerations` (90-day retention) grow without bound. Free of charge, sweeps within 24h. Set in Firebase Console: collection `rateLimits` field `expireAt`, collection `aiGenerations` field `expireAt`. Operator step in M16 §Documentation.
+- **`max_completion_tokens: 4000` is a cost amplifier cap, not just a quality cap.** A realistic palette+RLE response is 1.5K-3K tokens. The 4K headroom defends against prompt-manipulation attacks ("emit 1000 rows", "repeat the palette") that would 10× per-gen cost without it. Pair with `finish_reason === 'length'` detection: if the model truncates, treat as a validation failure and trigger the retry-at-`temperature: 0` path.
+- **`request.json()` is not idempotent.** Read body into a const before any retry path. (M10 already documented this; M16 reaffirms — applicable to every API route that needs to reference the body more than once or in error paths.)
+- **Validation-first allocation is the safe order for any external-input decoder.** `decode(response)` validates the entire shape via `validateResponse(response)` before allocating the output buffer. No partial-write state is reachable. This pattern transfers to any future feature that turns external JSON into a binary buffer (e.g., M17+ image-to-skin if it lands).
+- **Bearer-token auth path requires `checkRevoked: true` for paid endpoints.** Costs an extra round-trip but ensures `revokeRefreshTokens()` is honored immediately rather than waiting for the 1h ID-token refresh window. Stolen-token threat model justifies the cost.
+
+### Gotchas for future milestones
+
+- **Client disconnect does NOT zero Groq's bill.** The `AbortSignal` cuts the SDK call but Groq still bills tokens generated up to the abort. The hard cost cap is `max_completion_tokens: 4000`, not the abort signal. Documented for any future "stop generation" UX work that might assume "Cancel = free".
+- **Vercel may keep the function executing after client disconnect.** Even with the abort signal threaded through, Vercel's connection management is best-effort. Worst case: function runs to completion, Groq bills full output, slot is burned. Acceptable at M16 traffic; if it becomes a cost problem, an ergonomic fix is to require the client to actively-pull a streaming response so disconnect = no further pulls = no further cost.
+- **Rotating `IP_HASH_SALT` mid-window orphans existing per-IP buckets.** A user who hit the per-IP cap before rotation can re-hit it after rotation (their hashed-IP changes). The salt MUST NOT be rotated post-launch without a corresponding `/rateLimits/ip_*` purge. Documented in `.env.local.example`.
+- **Firestore TTL sweep is best-effort within 24h, not exact.** Counters with stale `expireAt` may persist briefly into the next window. Not a correctness issue (the doc-ID encodes the window, so the next window's counter starts fresh) but causes a slight short-term Firestore size overshoot. Not budget-relevant at projected traffic.
+- **The `/aiConfig/global` doc must be created manually for the kill switch to be effective on day 1.** If absent, the rate-limit transaction reads `snap.exists === false` and skips both `enabled === false` and `todayTokens > cap` branches. Operator step: create `/aiConfig/global` with `{ enabled: true, todayTokens: 0, todayDate: '<today>' }` after deploying rules, or rely on the first successful generation's `bumpAggregateTokens` to bootstrap the doc. M16 ships with the latter — first-gen-bootstrap — so day-1 traffic is gated only by per-user/IP caps until the first successful gen lands.
+- **Strict JSON-Schema mode (`gpt-oss-120b`) is the migration target if validation retry rate exceeds 10%.** M16 ships with `llama-3.3-70b-versatile` + `response_format: { type: 'json_object' }` + defensive validation + one retry. Track `retryCount > 0` rate in `/aiGenerations` weekly. If consistently > 10%, swap the model in `lib/ai/prompt.ts`.
+- **Email-verified gate is deferred.** Throwaway-account abuse is mitigated by the per-IP hourly cap (15/hr) plus every-generation logging. If `/aiGenerations` review surfaces multi-account-from-one-IP patterns, prioritize email-verified gate + App Check in the next milestone.
+- **No keyboard shortcut for the AI dialog in M16.** Defers a key-claim discussion. M5's Toolbar already owns several letter keys; the AI dialog opens only via the Sidebar button or future menu integration.
+
+### Pinned facts for next milestones
+
+**Exact version deltas from M11:** `groq-sdk@^1.1.2` (server-only). 1 new dependency. 12 vulnerabilities reported by `npm audit` (2 low, 10 moderate); all transitive through `groq-sdk` or pre-existing `firebase-admin`. None on the client critical path.
+
+**File paths established:**
+
+- `lib/ai/types.ts` — `AISkinResponse`, `CodecError`, `AIGenerateErrorBody`, `CodecErrorReason`. Pure types module — importable from both client and server.
+- `lib/ai/skin-codec.ts` — `decode(response): Uint8ClampedArray` + `validateResponse(value)`. Pure module, no SDK imports. Used by both the route (validation gate) and the editor handler (client decode).
+- `lib/ai/prompt.ts` — `MODEL`, `SYSTEM_PROMPT`, `buildMessages(userPrompt, isRetry)`, `costEstimateUsd`, pricing constants. `server-only`.
+- `lib/ai/groq.ts` — `generateSkin(userPrompt, signal)` + typed error tree (`GroqEnvError`, `GroqAuthError`, `GroqRateLimitError`, `GroqUpstreamError`, `GroqTimeoutError`, `GroqAbortedError`, `GroqValidationError`) + `getGroqKeyShape()`. `server-only`. Dynamically imports `groq-sdk` inside the function.
+- `lib/ai/rate-limit.ts` — `checkAndIncrement`, `refundSlot`, `bumpAggregateTokens`, `hashIp`. `server-only`. All counter docs at `/rateLimits/*`; aggregate at `/aiConfig/global`.
+- `lib/firebase/ai-logs.ts` — `logGeneration`, `redactPrompt`. `server-only`. Best-effort write to `/aiGenerations`. PII redacted before write. `ipHash` deliberately NOT logged here.
+- `app/_components/AIGenerateDialog.tsx` — ARIA dialog (textarea + 200-char counter + idle/loading/success/error state machine). Accepts `onGenerate(prompt) => Promise<void>`.
+- `app/api/ai/generate/route.ts` — POST route, Node runtime, `force-dynamic`. Bearer-first / cookie-fallback auth. Translates Groq errors into typed HTTP statuses (400/401/422/429/499/500/502/503/504).
+- `app/editor/_components/Sidebar.tsx` — extended with optional `onOpenAi` prop. Adds the ✨ AI button between LayerPanel and Export.
+- `app/editor/_components/EditorLayout.tsx` — extended with `aiOpen` state, `handleAiGenerate` callback (bearer-token fetch + dynamic codec import + addLayer + layer-add undo + markEdited), `<AIGenerateDialog>` mount via `next/dynamic`.
+- `firestore.rules` — appended `/aiGenerations`, `/rateLimits`, `/aiConfig` deny-all blocks. Admin SDK bypasses.
+- `.env.local.example` — created. Documents `GROQ_API_KEY` (Groq Cloud, prefix `gsk_`) and `IP_HASH_SALT` (≥32 hex chars; `openssl rand -hex 32`).
+
+**Conventions established:**
+
+- Server-side third-party API calls: type-only seam (`lib/ai/types.ts` shape) → server-only runtime modules (`lib/ai/*.ts`) → API route. Dynamic `await import('third-party-sdk')` inside the route handler, not top-level.
+- Rate limiting: Firestore-backed transactional gate with hour + day + per-IP buckets + aggregate kill switch. Doc-IDs encode actor + window; rules deny-all.
+- Slot-burn policy: burn on validation/auth/upstream/timeout-after-stream-started; refund only on `aborted` with `!streamStarted`.
+- Env shape diagnostic: shape-only object in 500 body — `{ present, length, prefix: first-4-chars }`. Never key material.
+- AI generation logs: `/aiGenerations` collection, write-only from route, 90-day TTL via `expireAt`. PII-redact before write. No `ipHash` co-located with `uid`.
+- Per-IP hash: SHA-256-of-(IP + IP_HASH_SALT) truncated to 16 hex chars. Doc-ID-safe, one-way, sufficient distinctness.
+- Aggregate kill switch: single Firestore doc with `enabled` + `todayTokens` + `todayDate`. Read inside rate-limit transaction; bumped post-LLM-success. Self-resets on day rollover.
+- Generated layers follow the existing `addLayer` + `layer-add` undo pattern. No new undo command kind.
+
+**Bundle baseline update:**
+
+- `/editor`: 491 → **492 kB** First Load JS (+1 kB; budget was +5 kB). Marginal because the dialog is `next/dynamic`-loaded and the codec is dynamically imported only after a successful response.
+- `/api/ai/generate`: **102 kB** (framework baseline; all M16 server code is on the server side, not in any client bundle).
+
+**Test baseline:**
+
+- 701 → **831** tests (+130). Per-unit: Unit 1 +27 (skin-codec). Unit 2 +20 (groq). Unit 3 +20 (rate-limit) + 10 (ai-logs) = 30. Unit 4 +34 (route). Unit 5 +19 (AIGenerateDialog). Unit 6 — covered via existing EditorLayout integration paths.
+
+**Audit baseline:**
+
+- Production client bundle: still **0 vulnerabilities** (groq-sdk lives server-side only; no client-bundle exposure).
+- Server: `groq-sdk` adds transitive deps (no high/critical vulnerabilities surfaced). `npm audit` total: 12 (2 low, 10 moderate), all server-only.
+
+**Operational checklist (deploy-time):**
+
+1. Add `GROQ_API_KEY` to Vercel env (Production + Preview + Development). No quotes, no whitespace. Generate at https://console.groq.com/keys.
+2. Generate `IP_HASH_SALT` via `openssl rand -hex 32`; add to all three Vercel envs. NEVER rotate without purging `/rateLimits/ip_*`.
+3. Deploy `firestore.rules` via `firebase deploy --only firestore:rules`. Verify the new `/aiGenerations`, `/rateLimits`, `/aiConfig` blocks are present in Firebase Console.
+4. Create Firestore TTL policies in Firebase Console: collection `rateLimits` field `expireAt`; collection `aiGenerations` field `expireAt`. Both are best-effort sweep within ~24h.
+5. (Optional) Manually create `/aiConfig/global` with `{ enabled: true, todayTokens: 0, todayDate: '<YYYYMMDD>' }` so the kill switch is operator-flippable from day 1. Otherwise, the doc bootstraps after the first successful gen.
+6. Smoke test: signed-in user generates a skin, sees the new layer, undoes successfully. Check `/aiGenerations` for the log entry — `tokensIn`, `tokensOut`, `costEstimate` populated; no `ipHash` field.
+7. Hit the 5/hr cap on a test account; verify 429 with `reason: 'hour'`. Hour rollover restores access.
+
+### Recommended reading for M17+
+
+- `lib/ai/groq.ts::generateSkin` — the typed-error tree pattern (one error class per failure mode + a single `instanceof` cascade in the route) is reusable for any future paid-API call. Copy the structure when adding M17's next external service.
+- `lib/ai/rate-limit.ts::checkAndIncrement` — transaction-gated counter pattern. If M17 needs another rate-limited endpoint, add a new bucket-doc convention (e.g., `/rateLimits/imagegen_{uid}_{HH}`) and call this function with the new uid + caps.
+- `lib/ai/skin-codec.ts::decode` — the validation-first-then-allocate pattern is a transferable safety property. Any future external-JSON-to-binary decoder should follow the same order.
+- The plan's §Slot-burn-with-pre-stream-refund decision — important enough to revisit if M17 introduces a feature where partial-output is recoverable (streaming, draft saves). The current rule "burn on most failures" assumes the LLM call is single-shot.
+- `.env.local.example` — the canonical place to document new env vars. Future paid-API milestones should add their own `<API>_API_KEY` and any per-feature secret here with comments.
