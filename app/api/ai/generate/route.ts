@@ -219,6 +219,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     const result = await generateSkin(prompt, signal);
 
+    console.log('[AI Generation] ✅ Success:', {
+      promptPreview: prompt.substring(0, 50) + '...',
+      retryCount: result.retryCount,
+      finishReason: result.finishReason,
+      tokensIn: result.promptTokens ?? 0,
+      tokensOut: result.completionTokens ?? 0,
+      costEstimate: costEstimateUsd(result.promptTokens, result.completionTokens),
+      timestamp: new Date().toISOString(),
+    });
+
     // 7. Best-effort logging of success.
     const cost = costEstimateUsd(result.promptTokens, result.completionTokens);
     void logGeneration({
@@ -248,6 +258,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // GroqEnvError → 500 with shape diagnostic. NEVER include key.
     if (err instanceof GroqEnvError) {
+      console.error('[AI Generation] ❌ GroqEnvError - API Key Configuration Issue:', {
+        errorMessage: err.message,
+        envKeyShape: getGroqKeyShape(),
+        timestamp: new Date().toISOString(),
+      });
       void logGeneration({
         uid,
         prompt,
@@ -276,6 +291,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // GroqAbortedError → 499 (client-closed-request). Refund only when
     // the abort fired BEFORE any token streaming began.
     if (err instanceof GroqAbortedError) {
+      console.warn('[AI Generation] ⚠️  GroqAbortedError - Request Cancelled:', {
+        streamStarted: err.streamStarted,
+        willRefund: !err.streamStarted,
+        timestamp: new Date().toISOString(),
+      });
       void logGeneration({
         uid,
         prompt,
@@ -296,6 +316,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // GroqTimeoutError → 504. Burn — Groq may have started streaming.
     if (err instanceof GroqTimeoutError) {
+      console.error('[AI Generation] ❌ GroqTimeoutError - Request Timed Out:', {
+        timeoutMs: HARD_TIMEOUT_MS,
+        timestamp: new Date().toISOString(),
+      });
       void logGeneration({
         uid,
         prompt,
@@ -313,6 +337,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // GroqRateLimitError (org-wide quota) → 429 with retry-after.
     if (err instanceof GroqRateLimitError) {
+      console.warn('[AI Generation] ⚠️  GroqRateLimitError - Upstream Rate Limited:', {
+        retryAfterSeconds: err.retryAfterSeconds,
+        resetAt: new Date(Date.now() + err.retryAfterSeconds * 1000).toISOString(),
+        timestamp: new Date().toISOString(),
+      });
       void logGeneration({
         uid,
         prompt,
@@ -338,6 +367,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // GroqAuthError → 500 with shape diagnostic (operator-facing).
     if (err instanceof GroqAuthError) {
+      console.error('[AI Generation] ❌ GroqAuthError - Authentication Failed:', {
+        errorMessage: err.message,
+        envKeyShape: getGroqKeyShape(),
+        timestamp: new Date().toISOString(),
+      });
       void logGeneration({
         uid,
         prompt,
@@ -361,6 +395,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // GroqValidationError (after retry) → 422.
     if (err instanceof GroqValidationError) {
+      console.error('[AI Generation] ❌ GroqValidationError - Invalid Generation Output (JSON decode failed):', {
+        category: err.category,
+        finishReason: err.finishReason,
+        errorMessage: err.message,
+        promptPreview: prompt.substring(0, 50) + '...',
+        timestamp: new Date().toISOString(),
+      });
       void logGeneration({
         uid,
         prompt,
@@ -379,6 +420,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // GroqUpstreamError → 502.
     if (err instanceof GroqUpstreamError) {
+      console.error('[AI Generation] ❌ GroqUpstreamError - Groq API Error:', {
+        errorMessage: err.message,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        statusCode: (err as any).statusCode,
+        timestamp: new Date().toISOString(),
+      });
       void logGeneration({
         uid,
         prompt,
@@ -395,7 +442,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     // Unknown / unexpected.
-    console.error('ai/generate: unexpected failure', err);
+    console.error('[AI Generation] 🔥 UNEXPECTED ERROR:', {
+      errorName: err instanceof Error ? err.constructor.name : typeof err,
+      errorMessage: err instanceof Error ? err.message : String(err),
+      errorStack: err instanceof Error ? err.stack : undefined,
+      promptPreview: prompt.substring(0, 50) + '...',
+      timestamp: new Date().toISOString(),
+    });
     void logGeneration({
       uid,
       prompt,
