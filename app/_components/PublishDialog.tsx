@@ -41,6 +41,13 @@ type Props = {
   isOpen: boolean;
   onClose: () => void;
   onPublish: (meta: PublishMeta) => Promise<PublishResult>;
+  /**
+   * Optional handler invoked after a successful publish when the user
+   * has ticked the "Start new skin after publishing" checkbox. Receives
+   * no args; the caller is expected to reset the document and close
+   * the dialog.
+   */
+  onCreateNew?: () => void;
 };
 
 const FOCUSABLE =
@@ -50,13 +57,14 @@ function getFocusable(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
 }
 
-export function PublishDialog({ isOpen, onClose, onPublish }: Props) {
+export function PublishDialog({ isOpen, onClose, onPublish, onCreateNew }: Props) {
   const [state, setState] = useState<DialogState>('idle');
   const [name, setName] = useState('');
   const [tagsRaw, setTagsRaw] = useState('');
   const [error, setError] = useState('');
   const [result, setResult] = useState<PublishResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [createNewAfter, setCreateNewAfter] = useState(false);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -68,6 +76,7 @@ export function PublishDialog({ isOpen, onClose, onPublish }: Props) {
     setError('');
     setResult(null);
     setCopied(false);
+    setCreateNewAfter(false);
     returnFocusRef.current = (document.activeElement as HTMLElement | null) ?? null;
   }, [isOpen]);
 
@@ -184,6 +193,13 @@ export function PublishDialog({ isOpen, onClose, onPublish }: Props) {
       const res = await onPublish({ name: nameResult.name, tags: tagsResult.tags });
       setResult(res);
       setState('success');
+      // "Publish & Create New" — caller resets the document and closes
+      // the dialog, so the success UI never renders. The success-state
+      // setters above still run so callers that don't pass onCreateNew
+      // (or with the box unticked) get the normal post-publish UI.
+      if (createNewAfter && onCreateNew !== undefined) {
+        onCreateNew();
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Publish failed';
       setError(msg);
@@ -334,6 +350,20 @@ export function PublishDialog({ isOpen, onClose, onPublish }: Props) {
               maxLength={MAX_TAG_LENGTH * MAX_TAGS + MAX_TAGS * 2}
             />
           </div>
+
+          {onCreateNew !== undefined && (
+            <label className="mb-4 flex items-center gap-2 text-sm text-text-secondary">
+              <input
+                type="checkbox"
+                data-testid="publish-dialog-create-new"
+                checked={createNewAfter}
+                onChange={(e) => setCreateNewAfter(e.target.checked)}
+                disabled={state === 'loading'}
+                className="rounded border-ui-border disabled:opacity-50"
+              />
+              Start new skin after publishing
+            </label>
+          )}
 
           <div className="flex justify-end gap-2">
             <button

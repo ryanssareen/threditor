@@ -43,13 +43,19 @@ describe('PublishDialog', () => {
       permalinkUrl: '/skin/stub-id',
       ogImageUrl: null,
     })),
+    onCreateNew?: () => void,
   ) => {
     act(() => {
       root.render(
-        <PublishDialog isOpen={isOpen} onClose={onClose} onPublish={onPublish} />,
+        <PublishDialog
+          isOpen={isOpen}
+          onClose={onClose}
+          onPublish={onPublish}
+          onCreateNew={onCreateNew}
+        />,
       );
     });
-    return { onClose, onPublish };
+    return { onClose, onPublish, onCreateNew };
   };
 
   const $ = (testid: string): HTMLElement | null =>
@@ -189,6 +195,60 @@ describe('PublishDialog', () => {
       resolvePublish!({ skinId: 'x', permalinkUrl: '/skin/x', ogImageUrl: null });
       await new Promise((r) => setTimeout(r, 0));
     });
+  });
+
+  it('hides "Start new skin" checkbox when onCreateNew not provided', () => {
+    render(true);
+    expect($('publish-dialog-create-new')).toBeNull();
+  });
+
+  it('shows "Start new skin" checkbox when onCreateNew provided', () => {
+    render(true, vi.fn(), undefined, vi.fn());
+    const cb = $('publish-dialog-create-new') as HTMLInputElement | null;
+    expect(cb).not.toBeNull();
+    expect(cb!.checked).toBe(false);
+  });
+
+  it('checkbox checked + publish success → onCreateNew called', async () => {
+    const onCreateNew = vi.fn();
+    render(true, vi.fn(), undefined, onCreateNew);
+    fillInput($('publish-dialog-name') as HTMLInputElement, 'Cool');
+    act(() => {
+      ($('publish-dialog-create-new') as HTMLInputElement).click();
+    });
+    await act(async () => {
+      ($('publish-dialog-submit') as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(onCreateNew).toHaveBeenCalledTimes(1);
+  });
+
+  it('checkbox unchecked + publish success → onCreateNew NOT called', async () => {
+    const onCreateNew = vi.fn();
+    render(true, vi.fn(), undefined, onCreateNew);
+    fillInput($('publish-dialog-name') as HTMLInputElement, 'Cool');
+    await act(async () => {
+      ($('publish-dialog-submit') as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(onCreateNew).not.toHaveBeenCalled();
+  });
+
+  it('checkbox checked + publish FAILURE → onCreateNew NOT called', async () => {
+    const onCreateNew = vi.fn();
+    const onPublish = vi.fn(async () => {
+      throw new Error('Network broken');
+    });
+    render(true, vi.fn(), onPublish, onCreateNew);
+    fillInput($('publish-dialog-name') as HTMLInputElement, 'Cool');
+    act(() => {
+      ($('publish-dialog-create-new') as HTMLInputElement).click();
+    });
+    await act(async () => {
+      ($('publish-dialog-submit') as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(onCreateNew).not.toHaveBeenCalled();
   });
 
   it('backdrop click is a no-op while loading', async () => {

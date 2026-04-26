@@ -191,6 +191,15 @@ export type EditorState = {
    * the variant flip.
    */
   applyTemplateState: (snapshot: ApplyTemplateSnapshot) => void;
+  /**
+   * "Start over" reset. Clears layers (use-texture-manager Effect B
+   * reseeds a fresh placeholder for the current variant), resets the
+   * template-aware flags, and dismisses any in-flight contextual hint
+   * or pulse. Variant + recent swatches + tool/color selection are
+   * preserved (they're user preferences, not document state). Caller
+   * is responsible for clearing the undo stack.
+   */
+  resetDocument: () => void;
 
   // ── M8 luminance (color-blind mode) ────────────────────────────────
   /**
@@ -439,6 +448,16 @@ export const useEditorStore = create<EditorState>((set) => ({
       hasEditedSinceTemplate: snapshot.hasEditedSinceTemplate,
       lastAppliedTemplateId: snapshot.lastAppliedTemplateId,
     })),
+
+  resetDocument: () =>
+    set({
+      layers: [],
+      activeLayerId: '',
+      hasEditedSinceTemplate: false,
+      lastAppliedTemplateId: null,
+      activeContextualHint: null,
+      pulseTarget: null,
+    }),
 
   setLuminanceEnabled: (next) =>
     set((prev) =>

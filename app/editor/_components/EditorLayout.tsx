@@ -438,6 +438,16 @@ export function EditorLayout() {
     undoStack.redo(buildActions());
   }, [undoStack, buildActions]);
 
+  // "Publish & Create New": reset the document, clear the undo stack,
+  // and close the dialog. resetDocument empties the layers array; the
+  // useTextureManagerBundle Effect B then reseeds a fresh placeholder
+  // for the current variant — same path as a fresh editor session.
+  const handleCreateNew = useCallback(() => {
+    useEditorStore.getState().resetDocument();
+    undoStack.clear();
+    setPublishOpen(false);
+  }, [undoStack]);
+
   // M7 Unit 0: user-initiated variant toggle clears the undo stack.
   // User variant changes are NOT undoable per D5 — replaying stroke
   // commands across a variant switch is semantically ambiguous and
@@ -821,6 +831,7 @@ export function EditorLayout() {
         isOpen={publishOpen}
         onClose={() => setPublishOpen(false)}
         onPublish={handlePublish}
+        onCreateNew={handleCreateNew}
       />
 
       {/* M16 Unit 6: AI generation dialog — lazy-loaded. */}
