@@ -372,7 +372,7 @@ async function runAttempt(args: {
       palette.push('#00000000');
     }
 
-    const rows = (parsed as any).rows;
+    // rows is already declared above, reuse it
     let fixedRowCount = 0;
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r];
