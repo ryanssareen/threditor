@@ -234,11 +234,19 @@ async function callProvider(
 // ── POST handler ─────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  console.log('[AI Generation] 🎬 Request received');
+  
   // 1. Parse body — read once into a const (M10 §Gotcha 737).
   let bodyJson: unknown;
   try {
     bodyJson = await req.json();
-  } catch {
+    console.log('[AI Generation] 📦 Body parsed:', {
+      hasBody: bodyJson !== null,
+      bodyType: typeof bodyJson,
+      bodyKeys: bodyJson && typeof bodyJson === 'object' ? Object.keys(bodyJson) : [],
+    });
+  } catch (err) {
+    console.error('[AI Generation] ❌ JSON parse error:', err);
     return jsonError(
       { error: 'prompt_invalid', details: { reason: 'required' } },
       400,
@@ -252,12 +260,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       : undefined;
   const promptCheck = validatePrompt(promptRaw);
   if (!promptCheck.ok) {
+    console.error('[AI Generation] ❌ Prompt validation failed:', promptCheck.reason);
     return jsonError(
       { error: 'prompt_invalid', details: { reason: promptCheck.reason } },
       400,
     );
   }
   const prompt = promptCheck.prompt;
+  console.log('[AI Generation] ✅ Prompt validated:', prompt.substring(0, 50) + '...');
 
   // M17: Parse mode parameter (optional, defaults to env var).
   const modeRaw =
@@ -266,10 +276,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     'mode' in bodyJson
       ? (bodyJson as { mode: unknown }).mode
       : undefined;
+  console.log('[AI Generation] 🎛️ Mode parsing:', {
+    modeRaw,
+    modeType: typeof modeRaw,
+    envProvider: process.env.AI_PROVIDER,
+    envProviderTrimmed: (process.env.AI_PROVIDER ?? '').trim(),
+  });
+  
   const provider: Provider =
     modeRaw === 'cloudflare' || modeRaw === 'groq'
       ? modeRaw
       : readProvider(); // fallback to env var
+  
+  console.log('[AI Generation] 🎯 Provider selected:', provider);
 
   // 2. Auth.
   const auth = await resolveSession(req);
@@ -358,6 +377,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }),
     );
   } catch (err) {
+    console.error('[AI Generation] ❌ Provider call failed:', {
+      error: err,
+      errorType: err?.constructor?.name,
+      errorMessage: err instanceof Error ? err.message : String(err),
+      errorStack: err instanceof Error ? err.stack : undefined,
+      provider,
+      timestamp: new Date().toISOString(),
+    });
     return handleProviderError(err, {
       provider,
       uid,
@@ -402,6 +429,15 @@ function logFailure(
 }
 
 function handleProviderError(err: unknown, ctx: ErrorContext): NextResponse {
+  console.log('[AI Generation] 🔍 Handling error:', {
+    errorConstructor: err?.constructor?.name,
+    isCloudflareEnvError: err instanceof CloudflareEnvError,
+    isCloudflareAuthError: err instanceof CloudflareAuthError,
+    isCloudflareRateLimitError: err instanceof CloudflareRateLimitError,
+    isError: err instanceof Error,
+    provider: ctx.provider,
+  });
+  
   // ── Cloudflare error tree ──────────────────────────────────────
 
   if (err instanceof CloudflareEnvError) {
