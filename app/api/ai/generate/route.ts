@@ -290,18 +290,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   
   console.log('[AI Generation] 🎯 Provider selected:', provider);
 
-  // M17: Parse mode parameter (optional, defaults to env var).
-  const modeRaw =
-    bodyJson !== null &&
-    typeof bodyJson === 'object' &&
-    'mode' in bodyJson
-      ? (bodyJson as { mode: unknown }).mode
-      : undefined;
-  const provider: Provider =
-    modeRaw === 'cloudflare' || modeRaw === 'groq'
-      ? modeRaw
-      : readProvider(); // fallback to env var
-
   // 2. Auth.
   const auth = await resolveSession(req);
   if (auth.uid === null) return auth.authError ?? jsonError({ error: 'unauthorized' }, 401);
