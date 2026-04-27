@@ -355,6 +355,54 @@ async function runAttempt(args: {
       
       console.log(`[Groq] ✅ Padded to 64 rows with palette[${transparentIdx}] = "#00000000"`);
     }
+
+    // Auto-fix: If individual row runs don't sum to 64, pad with transparent pixels.
+    // Models sometimes generate [[0,32],[1,30]] (sums to 62) instead of 64.
+    const palette = (parsed as any).palette;
+    let transparentIdx = palette.indexOf('#00000000');
+    if (transparentIdx === -1) {
+      transparentIdx = palette.length;
+      palette.push('#00000000');
+    }
+
+    const rows = (parsed as any).rows;
+    let fixedRowCount = 0;
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      if (!Array.isArray(row)) continue;
+      
+      let sum = 0;
+      for (const pair of row) {
+        if (Array.isArray(pair) && typeof pair[1] === 'number') {
+          sum += pair[1];
+        }
+      }
+      
+      if (sum > 0 && sum < 64) {
+        // Pad this row to 64
+        row.push([transparentIdx, 64 - sum]);
+        fixedRowCount++;
+      } else if (sum > 64) {
+        // Truncate last run to make it exactly 64
+        const excess = sum - 64;
+        for (let i = row.length - 1; i >= 0 && excess > 0; i--) {
+          const pair = row[i];
+          if (Array.isArray(pair) && typeof pair[1] === 'number') {
+            const reduction = Math.min(pair[1], excess);
+            pair[1] -= reduction;
+            if (pair[1] === 0) {
+              row.splice(i, 1); // Remove zero-length run
+            }
+            break;
+          }
+        }
+        fixedRowCount++;
+      }
+    }
+
+    if (fixedRowCount > 0) {
+      console.log(`[Groq] 🔧 Auto-fixed ${fixedRowCount} rows with incorrect run sums`);
+    }
   }
 
   // Throws CodecError on any shape problem.
