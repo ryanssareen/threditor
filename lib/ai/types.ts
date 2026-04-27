@@ -85,6 +85,14 @@ export type AIGenerateErrorBody =
   | { error: 'service_paused' }
   | {
       error: 'service_misconfigured';
-      debug: { envKeyShape: { present: boolean; length: number; prefix: string } };
+      /**
+       * Shape diagnostic — populated only on Groq env failures since
+       * M16. Cloudflare env failures DO NOT include a debug body
+       * (M17 §Unit-4 design): the URL hostname and token presence
+       * are operator-debuggable from server logs only.
+       */
+      debug?: {
+        envKeyShape?: { present: boolean; length: number; prefix: string };
+      };
     }
   | { error: 'service_unavailable' };

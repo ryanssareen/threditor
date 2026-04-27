@@ -1,0 +1,15 @@
+{
+  "_comment": "M17 Unit 2: snapshot of the WAF rate-limit rule applied to the ai-skin-generator Worker route. Source of truth is the Cloudflare dashboard; this file exists for change-tracking, code review, and disaster recovery. Update both whenever the rule changes.",
+  "rule": {
+    "description": "ai-skin-generator: rate-limit per IP",
+    "expression": "(http.host eq \"ai-skin-generator.<account>.workers.dev\")",
+    "action": "block",
+    "ratelimit": {
+      "characteristics": ["ip.src"],
+      "period": 60,
+      "requests_per_period": 60,
+      "mitigation_timeout": 60
+    },
+    "_rationale": "60 req/min/IP. The per-uid 30/day cap on the Vercel route is the real abuse defense. This WAF rule's job is to bound a token-leak abuse scenario, not to throttle legitimate Vercel egress traffic, which concentrates on a small pool of egress IPs. Lower thresholds (10/min) caused self-DoS in the M17 plan review."
+  }
+}

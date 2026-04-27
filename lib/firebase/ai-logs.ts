@@ -58,14 +58,32 @@ export type LogGenerationEntry = {
   uid: string;
   prompt: string;
   model: string;
+  /**
+   * AI provider that produced this generation. Required for cohort
+   * comparison during the M17 rollout window (Unit 8). Distinct from
+   * `model` because two different `model` strings can still share a
+   * provider (e.g., `cf/sdxl-lightning` and `cf/sdxl-base` both
+   * `provider: 'cloudflare'`).
+   */
+  provider: 'groq' | 'cloudflare';
   success: boolean;
   error?: string;
-  /** Codec category if validation failed (palette_oor | row_drift | …). */
+  /**
+   * Validation/processing failure category. Groq path: codec reasons
+   * (`palette_index_oor`, `row_runs_invalid`, etc). Cloudflare path:
+   * image-pipeline reasons (`resize_failed`, `quantize_failed`,
+   * `rle_failed`).
+   */
   validationFailureCategory?: string;
   retryCount: 0 | 1;
   finishReason: string | null;
-  tokensIn: number;
-  tokensOut: number;
+  /**
+   * Token counts. `null` (not 0) on the Cloudflare path — 0 is a
+   * meaningful Groq value ("ran but consumed nothing"), null means
+   * "not applicable to this provider".
+   */
+  tokensIn: number | null;
+  tokensOut: number | null;
   costEstimate: number;
 };
 
@@ -85,6 +103,7 @@ export async function logGeneration(
       uid: entry.uid,
       prompt: redactPrompt(entry.prompt),
       model: entry.model,
+      provider: entry.provider,
       success: entry.success,
       error: entry.error ?? null,
       validationFailureCategory: entry.validationFailureCategory ?? null,

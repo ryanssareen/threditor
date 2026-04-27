@@ -1,38 +1,49 @@
 import 'server-only';
 
 /**
- * M16 Unit 4: POST /api/ai/generate
+ * M16 Unit 4 + M17 Unit 5: POST /api/ai/generate
  *
  * Pipeline:
  *   1. Parse body, validate prompt (length, charset, NFKC).
  *   2. Resolve session (Bearer first, cookie fallback).
  *   3. Hash IP (SHA-256 + IP_HASH_SALT, truncated to 16 hex chars).
  *   4. Atomic rate-limit check + increment via Firestore transaction.
- *   5. Call Groq with combined AbortSignal (req.signal + 30s timeout).
- *   6. Decode-validate the response (validation runs inside the codec
- *      via the client wrapper).
- *   7. Log to /aiGenerations (best-effort, never re-thrown).
+ *   5. Branch on `AI_PROVIDER` env (default: `groq`):
+ *        - `cloudflare` → Cloudflare Worker (SDXL Lightning) →
+ *          sharp/image-q pipeline → AISkinResponse.
+ *        - `groq` → existing M16 Groq SDK path.
+ *   6. Decode-validate the response (codec inside the provider wrap).
+ *   7. Log to /aiGenerations (best-effort, never re-thrown) with
+ *      `provider` for cohort comparison.
  *   8. Return { palette, rows } JSON.
  *
- * Slot-burn policy on failure:
- *   - GroqAbortedError with !streamStarted → REFUND (Groq billed
- *     nothing).
- *   - All other failures → BURN (the slot represents whatever the
- *     user's input + LLM did, even if the result is unusable).
+ * Slot-burn policy on failure (preserved from M16):
+ *   - GroqAbortedError / CloudflareAbortedError with !streamStarted
+ *     → REFUND (provider billed nothing).
+ *   - All other failures → BURN.
  *
- * Env shape diagnostic (commit `de8f76f` discipline): if GROQ_API_KEY
- * is missing or malformed, the 500 body includes `{ debug:
- * { envKeyShape: { present, length, prefix } } }` — never key material.
+ * Cloudflare slot-burn note: `streamStarted=true` flips when the
+ * `fetch(workerUrl)` promise resolves (response headers received).
+ * Cloudflare bills Neurons inside the Worker before the response
+ * promise resolves on the Vercel side, so an abort during the
+ * `arrayBuffer()` read keeps the slot burned. See plan §System-Wide
+ * Impact for the rationale.
+ *
+ * `maxDuration = 30` matches the in-handler `HARD_TIMEOUT_MS`. Without
+ * it the Vercel Hobby-tier 10s default would 504 on cold starts before
+ * our own combined-signal abort fires.
  */
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 30;
 
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 import { getServerSession } from '@/lib/firebase/auth';
 import {
+  bumpAggregateCloudflareCalls,
   bumpAggregateTokens,
   checkAndIncrement,
   hashIp,
@@ -50,12 +61,34 @@ import {
   generateSkin,
   getGroqKeyShape,
 } from '@/lib/ai/groq';
+import {
+  CloudflareAbortedError,
+  CloudflareAuthError,
+  CloudflareEnvError,
+  CloudflareRateLimitError,
+  CloudflareTimeoutError,
+  CloudflareUpstreamError,
+  ImageProcessingError,
+} from '@/lib/ai/cloudflare-errors';
+import {
+  CLOUDFLARE_MODEL_ID,
+  generateSkinFromCloudflare,
+  getCloudflareEnvShape,
+} from '@/lib/ai/cloudflare-client';
 import { costEstimateUsd, HARD_TIMEOUT_MS, MODEL } from '@/lib/ai/prompt';
+import type { AISkinResponse } from '@/lib/ai/types';
 
 const PROMPT_MAX_LEN = 200;
 // Match `[\p{Cc}\p{Cf}\p{Co}\p{Cn}]` — control bytes, format/bidi
 // overrides, private-use, unassigned codepoints.
 const FORBIDDEN_CHARS = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}]/u;
+
+type Provider = 'groq' | 'cloudflare';
+
+function readProvider(): Provider {
+  const raw = (process.env.AI_PROVIDER ?? '').trim().toLowerCase();
+  return raw === 'cloudflare' ? 'cloudflare' : 'groq';
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -154,6 +187,50 @@ function combineSignals(...signals: AbortSignal[]): AbortSignal {
   return controller.signal;
 }
 
+// ── Provider unification ─────────────────────────────────────────────
+
+type ProviderResult = {
+  parsed: AISkinResponse;
+  retryCount: 0 | 1;
+  finishReason: string | null;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  totalTokens: number | null;
+  modelId: string;
+};
+
+async function callProvider(
+  provider: Provider,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<ProviderResult> {
+  if (provider === 'cloudflare') {
+    const r = await generateSkinFromCloudflare(prompt, signal);
+    return {
+      parsed: r.parsed,
+      retryCount: 0,
+      finishReason: 'stop',
+      // Tokens are not a Cloudflare concept — write null (not 0) so
+      // /aiGenerations queries can distinguish "no tokens because
+      // Cloudflare" from "0 tokens because Groq returned empty".
+      tokensIn: null,
+      tokensOut: null,
+      totalTokens: null,
+      modelId: r.modelId,
+    };
+  }
+  const r = await generateSkin(prompt, signal);
+  return {
+    parsed: r.parsed,
+    retryCount: r.retryCount,
+    finishReason: r.finishReason,
+    tokensIn: r.promptTokens ?? 0,
+    tokensOut: r.completionTokens ?? 0,
+    totalTokens: r.totalTokens ?? 0,
+    modelId: MODEL,
+  };
+}
+
 // ── POST handler ─────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -215,40 +292,51 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const timeoutSignal = AbortSignal.timeout(HARD_TIMEOUT_MS);
   const signal = combineSignals(req.signal, timeoutSignal);
 
-  // 6. Call Groq.
+  const provider = readProvider();
+
+  // 6. Call the model.
   console.log('[AI Generation] 🚀 Starting generation:', {
     promptPreview: prompt.substring(0, 50) + '...',
+    provider,
     uid,
     timestamp: new Date().toISOString(),
   });
-  
+
   try {
-    const result = await generateSkin(prompt, signal);
+    const result = await callProvider(provider, prompt, signal);
 
     console.log('[AI Generation] ✅ Success:', {
       promptPreview: prompt.substring(0, 50) + '...',
+      provider,
+      modelId: result.modelId,
       retryCount: result.retryCount,
       finishReason: result.finishReason,
-      tokensIn: result.promptTokens ?? 0,
-      tokensOut: result.completionTokens ?? 0,
-      costEstimate: costEstimateUsd(result.promptTokens, result.completionTokens),
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
       timestamp: new Date().toISOString(),
     });
 
     // 7. Best-effort logging of success.
-    const cost = costEstimateUsd(result.promptTokens, result.completionTokens);
+    const cost =
+      provider === 'cloudflare'
+        ? 0
+        : costEstimateUsd(result.tokensIn ?? undefined, result.tokensOut ?? undefined);
     void logGeneration({
       uid,
       prompt,
-      model: MODEL,
+      model: result.modelId,
+      provider,
       success: true,
       retryCount: result.retryCount,
       finishReason: result.finishReason,
-      tokensIn: result.promptTokens ?? 0,
-      tokensOut: result.completionTokens ?? 0,
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
       costEstimate: cost,
     });
-    if (typeof result.totalTokens === 'number' && result.totalTokens > 0) {
+
+    if (provider === 'cloudflare') {
+      void bumpAggregateCloudflareCalls(1);
+    } else if (typeof result.totalTokens === 'number' && result.totalTokens > 0) {
       void bumpAggregateTokens(result.totalTokens);
     }
 
@@ -260,213 +348,260 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }),
     );
   } catch (err) {
-    // ── Failure paths ──────────────────────────────────────────────
+    return handleProviderError(err, {
+      provider,
+      uid,
+      prompt,
+      refundDocs,
+    });
+  }
+}
 
-    // GroqEnvError → 500 with shape diagnostic. NEVER include key.
-    if (err instanceof GroqEnvError) {
-      console.error('[AI Generation] ❌ GroqEnvError - API Key Configuration Issue:', {
-        errorMessage: err.message,
-        envKeyShape: getGroqKeyShape(),
+// ── Error mapping ────────────────────────────────────────────────────
+
+type ErrorContext = {
+  provider: Provider;
+  uid: string;
+  prompt: string;
+  refundDocs: { user: string; userDay: string; ip: string | null };
+};
+
+function logFailure(
+  ctx: ErrorContext,
+  partial: {
+    error: string;
+    validationFailureCategory?: string;
+    retryCount?: 0 | 1;
+    finishReason?: string | null;
+  },
+): void {
+  void logGeneration({
+    uid: ctx.uid,
+    prompt: ctx.prompt,
+    model: ctx.provider === 'cloudflare' ? CLOUDFLARE_MODEL_ID : MODEL,
+    provider: ctx.provider,
+    success: false,
+    error: partial.error,
+    validationFailureCategory: partial.validationFailureCategory,
+    retryCount: partial.retryCount ?? 0,
+    finishReason: partial.finishReason ?? null,
+    tokensIn: ctx.provider === 'cloudflare' ? null : 0,
+    tokensOut: ctx.provider === 'cloudflare' ? null : 0,
+    costEstimate: 0,
+  });
+}
+
+function handleProviderError(err: unknown, ctx: ErrorContext): NextResponse {
+  // ── Cloudflare error tree ──────────────────────────────────────
+
+  if (err instanceof CloudflareEnvError) {
+    console.error(
+      '[AI Generation] ❌ CloudflareEnvError - Worker URL/token misconfigured:',
+      {
+        envShape: err.envShape,
+        message: err.message,
         timestamp: new Date().toISOString(),
-      });
-      void logGeneration({
-        uid,
-        prompt,
-        model: MODEL,
-        success: false,
-        error: 'service_misconfigured',
-        retryCount: 0,
-        finishReason: null,
-        tokensIn: 0,
-        tokensOut: 0,
-        costEstimate: 0,
-      });
-      // Burn slot — the user's request was processed and a config
-      // failure on our end is not their fault; refunding here would
-      // let an attacker probe whether the env is broken (timing
-      // signal). Operator should fix the env, not refund users.
-      return jsonError(
-        {
-          error: 'service_misconfigured',
-          debug: { envKeyShape: getGroqKeyShape() },
-        },
-        500,
-      );
-    }
+      },
+    );
+    logFailure(ctx, { error: 'service_misconfigured' });
+    // No `debug` body — operator reads the diagnostic from server logs.
+    return jsonError({ error: 'service_misconfigured' }, 500);
+  }
 
-    // GroqAbortedError → 499 (client-closed-request). Refund only when
-    // the abort fired BEFORE any token streaming began.
-    if (err instanceof GroqAbortedError) {
-      console.warn('[AI Generation] ⚠️  GroqAbortedError - Request Cancelled:', {
+  if (err instanceof CloudflareAuthError) {
+    console.error(
+      '[AI Generation] ❌ CloudflareAuthError - Worker rejected our token:',
+      {
+        envShape: getCloudflareEnvShape(),
+        message: err.message,
+        timestamp: new Date().toISOString(),
+      },
+    );
+    logFailure(ctx, { error: 'service_misconfigured' });
+    return jsonError({ error: 'service_misconfigured' }, 500);
+  }
+
+  if (err instanceof CloudflareRateLimitError) {
+    console.warn(
+      '[AI Generation] ⚠️  CloudflareRateLimitError - WAF rate limit:',
+      {
+        retryAfterSeconds: err.retryAfterSeconds,
+        timestamp: new Date().toISOString(),
+      },
+    );
+    logFailure(ctx, { error: 'upstream_rate_limited' });
+    return jsonError(
+      {
+        error: 'rate_limited',
+        reason: 'aggregate',
+        resetAt: Date.now() + err.retryAfterSeconds * 1000,
+      },
+      429,
+      { 'Retry-After': String(err.retryAfterSeconds) },
+    );
+  }
+
+  if (err instanceof CloudflareTimeoutError) {
+    console.error('[AI Generation] ❌ CloudflareTimeoutError - Worker timed out:', {
+      timeoutMs: HARD_TIMEOUT_MS,
+      timestamp: new Date().toISOString(),
+    });
+    logFailure(ctx, { error: 'timeout' });
+    return jsonError({ error: 'timeout' }, 504);
+  }
+
+  if (err instanceof CloudflareAbortedError) {
+    console.warn(
+      '[AI Generation] ⚠️  CloudflareAbortedError - Worker call aborted:',
+      {
         streamStarted: err.streamStarted,
         willRefund: !err.streamStarted,
         timestamp: new Date().toISOString(),
-      });
-      void logGeneration({
-        uid,
-        prompt,
-        model: MODEL,
-        success: false,
-        error: 'aborted',
-        retryCount: 0,
-        finishReason: null,
-        tokensIn: 0,
-        tokensOut: 0,
-        costEstimate: 0,
-      });
-      if (!err.streamStarted) {
-        void refundSlot(refundDocs);
-      }
-      return jsonError({ error: 'aborted' }, 499);
+      },
+    );
+    logFailure(ctx, { error: 'aborted' });
+    if (!err.streamStarted) {
+      void refundSlot(ctx.refundDocs);
     }
+    return jsonError({ error: 'aborted' }, 499);
+  }
 
-    // GroqTimeoutError → 504. Burn — Groq may have started streaming.
-    if (err instanceof GroqTimeoutError) {
-      console.error('[AI Generation] ❌ GroqTimeoutError - Request Timed Out:', {
-        timeoutMs: HARD_TIMEOUT_MS,
-        timestamp: new Date().toISOString(),
-      });
-      void logGeneration({
-        uid,
-        prompt,
-        model: MODEL,
-        success: false,
-        error: 'timeout',
-        retryCount: 0,
-        finishReason: null,
-        tokensIn: 0,
-        tokensOut: 0,
-        costEstimate: 0,
-      });
-      return jsonError({ error: 'timeout' }, 504);
-    }
+  if (err instanceof CloudflareUpstreamError) {
+    console.error('[AI Generation] ❌ CloudflareUpstreamError - Worker upstream error:', {
+      statusCode: err.statusCode,
+      bodyExcerpt: err.bodyExcerpt,
+      message: err.message,
+      timestamp: new Date().toISOString(),
+    });
+    logFailure(ctx, { error: 'upstream' });
+    return jsonError({ error: 'service_unavailable' }, 502);
+  }
 
-    // GroqRateLimitError (org-wide quota) → 429 with retry-after.
-    if (err instanceof GroqRateLimitError) {
-      console.warn('[AI Generation] ⚠️  GroqRateLimitError - Upstream Rate Limited:', {
-        retryAfterSeconds: err.retryAfterSeconds,
-        resetAt: new Date(Date.now() + err.retryAfterSeconds * 1000).toISOString(),
-        timestamp: new Date().toISOString(),
-      });
-      void logGeneration({
-        uid,
-        prompt,
-        model: MODEL,
-        success: false,
-        error: 'upstream_rate_limited',
-        retryCount: 0,
-        finishReason: null,
-        tokensIn: 0,
-        tokensOut: 0,
-        costEstimate: 0,
-      });
-      return jsonError(
-        {
-          error: 'rate_limited',
-          reason: 'aggregate',
-          resetAt: Date.now() + err.retryAfterSeconds * 1000,
-        },
-        429,
-        { 'Retry-After': String(err.retryAfterSeconds) },
-      );
-    }
+  if (err instanceof ImageProcessingError) {
+    console.error('[AI Generation] ❌ ImageProcessingError - sharp/image-q failed:', {
+      category: err.category,
+      message: err.message,
+      timestamp: new Date().toISOString(),
+    });
+    logFailure(ctx, {
+      error: 'generation_invalid',
+      validationFailureCategory: err.category,
+    });
+    return jsonError({ error: 'generation_invalid' }, 422);
+  }
 
-    // GroqAuthError → 500 with shape diagnostic (operator-facing).
-    if (err instanceof GroqAuthError) {
-      console.error('[AI Generation] ❌ GroqAuthError - Authentication Failed:', {
-        errorMessage: err.message,
-        envKeyShape: getGroqKeyShape(),
-        timestamp: new Date().toISOString(),
-      });
-      void logGeneration({
-        uid,
-        prompt,
-        model: MODEL,
-        success: false,
+  // ── Groq error tree (preserved from M16) ───────────────────────
+
+  if (err instanceof GroqEnvError) {
+    console.error('[AI Generation] ❌ GroqEnvError - API Key Configuration Issue:', {
+      errorMessage: err.message,
+      envKeyShape: getGroqKeyShape(),
+      timestamp: new Date().toISOString(),
+    });
+    logFailure(ctx, { error: 'service_misconfigured' });
+    return jsonError(
+      {
         error: 'service_misconfigured',
-        retryCount: 0,
-        finishReason: null,
-        tokensIn: 0,
-        tokensOut: 0,
-        costEstimate: 0,
-      });
-      return jsonError(
-        {
-          error: 'service_misconfigured',
-          debug: { envKeyShape: getGroqKeyShape() },
-        },
-        500,
-      );
-    }
+        debug: { envKeyShape: getGroqKeyShape() },
+      },
+      500,
+    );
+  }
 
-    // GroqValidationError (after retry) → 422.
-    if (err instanceof GroqValidationError) {
-      console.error('[AI Generation] ❌ GroqValidationError - Invalid Generation Output (JSON decode failed):', {
+  if (err instanceof GroqAbortedError) {
+    console.warn('[AI Generation] ⚠️  GroqAbortedError - Request Cancelled:', {
+      streamStarted: err.streamStarted,
+      willRefund: !err.streamStarted,
+      timestamp: new Date().toISOString(),
+    });
+    logFailure(ctx, { error: 'aborted' });
+    if (!err.streamStarted) {
+      void refundSlot(ctx.refundDocs);
+    }
+    return jsonError({ error: 'aborted' }, 499);
+  }
+
+  if (err instanceof GroqTimeoutError) {
+    console.error('[AI Generation] ❌ GroqTimeoutError - Request Timed Out:', {
+      timeoutMs: HARD_TIMEOUT_MS,
+      timestamp: new Date().toISOString(),
+    });
+    logFailure(ctx, { error: 'timeout' });
+    return jsonError({ error: 'timeout' }, 504);
+  }
+
+  if (err instanceof GroqRateLimitError) {
+    console.warn('[AI Generation] ⚠️  GroqRateLimitError - Upstream Rate Limited:', {
+      retryAfterSeconds: err.retryAfterSeconds,
+      resetAt: new Date(Date.now() + err.retryAfterSeconds * 1000).toISOString(),
+      timestamp: new Date().toISOString(),
+    });
+    logFailure(ctx, { error: 'upstream_rate_limited' });
+    return jsonError(
+      {
+        error: 'rate_limited',
+        reason: 'aggregate',
+        resetAt: Date.now() + err.retryAfterSeconds * 1000,
+      },
+      429,
+      { 'Retry-After': String(err.retryAfterSeconds) },
+    );
+  }
+
+  if (err instanceof GroqAuthError) {
+    console.error('[AI Generation] ❌ GroqAuthError - Authentication Failed:', {
+      errorMessage: err.message,
+      envKeyShape: getGroqKeyShape(),
+      timestamp: new Date().toISOString(),
+    });
+    logFailure(ctx, { error: 'service_misconfigured' });
+    return jsonError(
+      {
+        error: 'service_misconfigured',
+        debug: { envKeyShape: getGroqKeyShape() },
+      },
+      500,
+    );
+  }
+
+  if (err instanceof GroqValidationError) {
+    console.error(
+      '[AI Generation] ❌ GroqValidationError - Invalid Generation Output:',
+      {
         category: err.category,
         finishReason: err.finishReason,
         errorMessage: err.message,
-        promptPreview: prompt.substring(0, 50) + '...',
+        promptPreview: ctx.prompt.substring(0, 50) + '...',
         timestamp: new Date().toISOString(),
-      });
-      void logGeneration({
-        uid,
-        prompt,
-        model: MODEL,
-        success: false,
-        error: 'generation_invalid',
-        validationFailureCategory: err.category,
-        retryCount: 1,
-        finishReason: err.finishReason,
-        tokensIn: 0,
-        tokensOut: 0,
-        costEstimate: 0,
-      });
-      return jsonError({ error: 'generation_invalid' }, 422);
-    }
+      },
+    );
+    logFailure(ctx, {
+      error: 'generation_invalid',
+      validationFailureCategory: err.category,
+      retryCount: 1,
+      finishReason: err.finishReason,
+    });
+    return jsonError({ error: 'generation_invalid' }, 422);
+  }
 
-    // GroqUpstreamError → 502.
-    if (err instanceof GroqUpstreamError) {
-      console.error('[AI Generation] ❌ GroqUpstreamError - Groq API Error:', {
-        errorMessage: err.message,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        statusCode: (err as any).statusCode,
-        timestamp: new Date().toISOString(),
-      });
-      void logGeneration({
-        uid,
-        prompt,
-        model: MODEL,
-        success: false,
-        error: 'upstream',
-        retryCount: 0,
-        finishReason: null,
-        tokensIn: 0,
-        tokensOut: 0,
-        costEstimate: 0,
-      });
-      return jsonError({ error: 'service_unavailable' }, 502);
-    }
-
-    // Unknown / unexpected.
-    console.error('[AI Generation] 🔥 UNEXPECTED ERROR:', {
-      errorName: err instanceof Error ? err.constructor.name : typeof err,
-      errorMessage: err instanceof Error ? err.message : String(err),
-      errorStack: err instanceof Error ? err.stack : undefined,
-      promptPreview: prompt.substring(0, 50) + '...',
+  if (err instanceof GroqUpstreamError) {
+    console.error('[AI Generation] ❌ GroqUpstreamError - Groq API Error:', {
+      errorMessage: err.message,
       timestamp: new Date().toISOString(),
     });
-    void logGeneration({
-      uid,
-      prompt,
-      model: MODEL,
-      success: false,
-      error: 'unknown',
-      retryCount: 0,
-      finishReason: null,
-      tokensIn: 0,
-      tokensOut: 0,
-      costEstimate: 0,
-    });
-    return jsonError({ error: 'service_unavailable' }, 500);
+    logFailure(ctx, { error: 'upstream' });
+    return jsonError({ error: 'service_unavailable' }, 502);
   }
+
+  // ── Unknown / unexpected ───────────────────────────────────────
+
+  console.error('[AI Generation] 🔥 UNEXPECTED ERROR:', {
+    errorName: err instanceof Error ? err.constructor.name : typeof err,
+    errorMessage: err instanceof Error ? err.message : String(err),
+    errorStack: err instanceof Error ? err.stack : undefined,
+    promptPreview: ctx.prompt.substring(0, 50) + '...',
+    timestamp: new Date().toISOString(),
+  });
+  logFailure(ctx, { error: 'unknown' });
+  return jsonError({ error: 'service_unavailable' }, 500);
 }
