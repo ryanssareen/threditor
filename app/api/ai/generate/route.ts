@@ -216,6 +216,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const signal = combineSignals(req.signal, timeoutSignal);
 
   // 6. Call Groq.
+  console.log('[AI Generation] 🚀 Starting generation:', {
+    promptPreview: prompt.substring(0, 50) + '...',
+    uid,
+    timestamp: new Date().toISOString(),
+  });
+  
   try {
     const result = await generateSkin(prompt, signal);
 

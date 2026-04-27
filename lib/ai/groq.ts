@@ -185,17 +185,28 @@ export async function generateSkin(
   userPrompt: string,
   signal: AbortSignal,
 ): Promise<GenerateSkinResult> {
+  console.log('[Groq] 🔧 generateSkin called:', {
+    promptLength: userPrompt.length,
+    promptPreview: userPrompt.substring(0, 50) + '...',
+    timestamp: new Date().toISOString(),
+  });
+  
   const keyShape = getGroqKeyShape();
+  console.log('[Groq] 🔑 API Key shape:', keyShape);
+  
   if (!keyShape.present) {
+    console.error('[Groq] ❌ API Key missing!');
     throw new GroqEnvError(keyShape);
   }
 
+  console.log('[Groq] 📦 Importing groq-sdk...');
   // Dynamic import keeps groq-sdk out of any accidentally-shared bundle
   // path. The cost of the import is one-time-per-cold-start (~200ms).
   const groqMod = await import('groq-sdk');
   const Groq = groqMod.default ?? groqMod.Groq;
   const errorCtors = groqMod;
 
+  console.log('[Groq] 🏗️  Creating Groq client...');
   const client = new Groq({
     apiKey: process.env.GROQ_API_KEY,
     timeout: HARD_TIMEOUT_MS,
@@ -204,6 +215,7 @@ export async function generateSkin(
     maxRetries: 1,
   });
 
+  console.log('[Groq] 📞 Calling Groq API (attempt 1, temp 0.8)...');
   // First attempt at temperature 0.8.
   let attempt: AttemptResult;
   let retryCount: 0 | 1 = 0;
