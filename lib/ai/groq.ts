@@ -299,6 +299,12 @@ async function runAttempt(args: {
     throw new GroqUpstreamError(outcome.message);
   }
 
+  console.log('[Groq] 📝 Raw response received:', {
+    contentLength: outcome.content.length,
+    contentPreview: outcome.content.substring(0, 200) + '...',
+    finishReason: outcome.finishReason,
+  });
+
   const json = extractJsonObject(outcome.content);
   if (json === null) {
     throw new CodecError('shape_invalid', 'No JSON object found in response');
@@ -310,6 +316,13 @@ async function runAttempt(args: {
   } catch {
     throw new CodecError('shape_invalid', 'JSON.parse failed');
   }
+
+  console.log('[Groq] 🔍 Parsed JSON structure:', {
+    hasPalette: typeof parsed === 'object' && parsed !== null && 'palette' in parsed,
+    hasRows: typeof parsed === 'object' && parsed !== null && 'rows' in parsed,
+    rowCount: typeof parsed === 'object' && parsed !== null && 'rows' in parsed && Array.isArray((parsed as any).rows) ? (parsed as any).rows.length : 'N/A',
+    paletteCount: typeof parsed === 'object' && parsed !== null && 'palette' in parsed && Array.isArray((parsed as any).palette) ? (parsed as any).palette.length : 'N/A',
+  });
 
   // Throws CodecError on any shape problem.
   validateResponse(parsed);
