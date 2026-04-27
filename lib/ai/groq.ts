@@ -406,7 +406,18 @@ async function runAttempt(args: {
   }
 
   // Throws CodecError on any shape problem.
-  validateResponse(parsed);
+  try {
+    validateResponse(parsed);
+    console.log('[Groq] ✅ Validation passed!');
+  } catch (validationErr) {
+    if (validationErr instanceof CodecError) {
+      console.log('[Groq] ❌ Validation failed after auto-fixes:', {
+        reason: validationErr.reason,
+        message: validationErr.message,
+      });
+    }
+    throw validationErr;
+  }
 
   return {
     parsed,
