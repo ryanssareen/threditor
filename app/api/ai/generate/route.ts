@@ -259,6 +259,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
   const prompt = promptCheck.prompt;
 
+  // M17: Parse mode parameter (optional, defaults to env var).
+  const modeRaw =
+    bodyJson !== null &&
+    typeof bodyJson === 'object' &&
+    'mode' in bodyJson
+      ? (bodyJson as { mode: unknown }).mode
+      : undefined;
+  const provider: Provider =
+    modeRaw === 'cloudflare' || modeRaw === 'groq'
+      ? modeRaw
+      : readProvider(); // fallback to env var
+
   // 2. Auth.
   const auth = await resolveSession(req);
   if (auth.uid === null) return auth.authError ?? jsonError({ error: 'unauthorized' }, 401);
@@ -291,8 +303,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // 5. Combined abort signal: client disconnect OR 30s timeout.
   const timeoutSignal = AbortSignal.timeout(HARD_TIMEOUT_MS);
   const signal = combineSignals(req.signal, timeoutSignal);
-
-  const provider = readProvider();
 
   // 6. Call the model.
   console.log('[AI Generation] 🚀 Starting generation:', {

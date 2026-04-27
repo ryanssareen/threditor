@@ -30,6 +30,8 @@ type SidebarProps = {
   onOpenExport?: () => void;
   /** M16 Unit 6: open the AI generation dialog. */
   onOpenAi?: () => void;
+  /** M17 fix: reset canvas (new skin). */
+  onOpenNewSkin?: () => void;
 };
 
 export function Sidebar({
@@ -43,6 +45,7 @@ export function Sidebar({
   onRedo,
   onOpenExport,
   onOpenAi,
+  onOpenNewSkin,
 }: SidebarProps) {
   return (
     <div
@@ -73,6 +76,17 @@ export function Sidebar({
           className="rounded-sm border border-ui-border bg-ui-base px-3 py-2 font-mono text-sm font-semibold text-text-primary hover:border-accent hover:text-accent"
         >
           ✨ AI
+        </button>
+      )}
+      {onOpenNewSkin !== undefined && (
+        <button
+          type="button"
+          data-testid="sidebar-new-skin-button"
+          aria-label="Start a new skin"
+          onClick={onOpenNewSkin}
+          className="rounded-sm border border-ui-border bg-ui-base px-3 py-2 font-mono text-sm font-semibold text-text-secondary hover:border-accent hover:text-accent"
+        >
+          🆕 New Skin
         </button>
       )}
       {onOpenExport !== undefined && (

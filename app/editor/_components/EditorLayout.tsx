@@ -635,7 +635,7 @@ export function EditorLayout() {
   // (no `'server-only'`); importing it dynamically here keeps it off
   // the editor's critical path.
   const handleAiGenerate = useCallback(
-    async (prompt: string): Promise<void> => {
+    async (prompt: string, mode: 'groq' | 'cloudflare' = 'groq'): Promise<void> => {
       const { getFirebase } = await import('@/lib/firebase/client');
       const { auth } = getFirebase();
       const currentUser = auth.currentUser;
@@ -654,7 +654,7 @@ export function EditorLayout() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${idToken}`,
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, mode }), // M17: pass mode
         credentials: 'include',
         signal: AbortSignal.timeout(45_000),
       });
@@ -816,6 +816,11 @@ export function EditorLayout() {
           onRedo={handleRedo}
           onOpenExport={() => setExportOpen(true)}
           onOpenAi={() => setAiOpen(true)}
+          onOpenNewSkin={() => {
+            // Clear undo stack first, then reset document
+            undoStackRef.current?.clear();
+            useEditorStore.getState().resetDocument();
+          }}
         />
       </aside>
 

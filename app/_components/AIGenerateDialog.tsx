@@ -2,6 +2,7 @@
 
 /**
  * M16 Unit 5: AI generation prompt dialog.
+ * M17 ADDITION: Dual-mode UI (Fast vs High Quality).
  *
  * Mirrors PublishDialog (M11 Unit 1) — hand-rolled ARIA dialog,
  * focus trap, Escape + backdrop close, idle/loading/success/error
@@ -31,6 +32,7 @@ function getFocusable(container: HTMLElement): HTMLElement[] {
 }
 
 type DialogState = 'idle' | 'loading' | 'success' | 'error';
+type AiMode = 'groq' | 'cloudflare';
 
 type Props = {
   isOpen: boolean;
@@ -40,14 +42,17 @@ type Props = {
    * `message` the dialog displays. The handler is responsible for
    * calling addLayer / pushing undo — this component renders state
    * and forwards the prompt only.
+   * 
+   * M17: Now accepts mode parameter (groq = fast, cloudflare = high quality).
    */
-  onGenerate: (prompt: string) => Promise<void>;
+  onGenerate: (prompt: string, mode: AiMode) => Promise<void>;
 };
 
 export function AIGenerateDialog({ isOpen, onClose, onGenerate }: Props) {
   const [state, setState] = useState<DialogState>('idle');
   const [prompt, setPrompt] = useState('');
   const [error, setError] = useState('');
+  const [mode, setMode] = useState<AiMode>('groq'); // M17: default to fast mode
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -137,7 +142,7 @@ export function AIGenerateDialog({ isOpen, onClose, onGenerate }: Props) {
     setState('loading');
     setError('');
     try {
-      await onGenerate(trimmed);
+      await onGenerate(trimmed, mode); // M17: pass mode
       setState('success');
     } catch (err) {
       const msg =
@@ -215,6 +220,41 @@ export function AIGenerateDialog({ isOpen, onClose, onGenerate }: Props) {
                 {error}
               </div>
             )}
+
+            {/* M17: Mode selector - Fast vs High Quality */}
+            <div className="mb-4">
+              <label className="mb-2 block text-sm text-text-secondary">
+                Quality
+              </label>
+              <div role="group" aria-label="AI generation mode" className="flex gap-1">
+                <button
+                  type="button"
+                  aria-pressed={mode === 'groq'}
+                  data-testid="ai-mode-fast"
+                  onClick={() => setMode('groq')}
+                  disabled={state === 'loading'}
+                  className={`flex-1 rounded-sm border border-ui-border bg-ui-base px-3 py-2 font-mono text-sm text-text-primary hover:border-accent/60 disabled:opacity-50 ${
+                    mode === 'groq' ? 'border-accent' : ''
+                  }`}
+                >
+                  ⚡ Fast
+                  <div className="mt-0.5 text-xs text-text-muted">3-5 sec</div>
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={mode === 'cloudflare'}
+                  data-testid="ai-mode-quality"
+                  onClick={() => setMode('cloudflare')}
+                  disabled={state === 'loading'}
+                  className={`flex-1 rounded-sm border border-ui-border bg-ui-base px-3 py-2 font-mono text-sm text-text-primary hover:border-accent/60 disabled:opacity-50 ${
+                    mode === 'cloudflare' ? 'border-accent' : ''
+                  }`}
+                >
+                  ✨ High Quality
+                  <div className="mt-0.5 text-xs text-text-muted">15-20 sec</div>
+                </button>
+              </div>
+            </div>
 
             <div className="mb-4">
               <label
