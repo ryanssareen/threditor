@@ -1,5 +1,12 @@
 import 'server-only';
 
+// Type for parsed Groq JSON response
+type ParsedGroqResponse = {
+  rows: Array<Array<[number, number]>>;
+  palette: string[];
+};
+
+
 /**
  * M16 Unit 2: Groq SDK wrapper.
  *
@@ -320,8 +327,8 @@ async function runAttempt(args: {
   console.log('[Groq] 🔍 Parsed JSON structure:', {
     hasPalette: typeof parsed === 'object' && parsed !== null && 'palette' in parsed,
     hasRows: typeof parsed === 'object' && parsed !== null && 'rows' in parsed,
-    rowCount: typeof parsed === 'object' && parsed !== null && 'rows' in parsed && Array.isArray((parsed as any).rows) ? (parsed as any).rows.length : 'N/A',
-    paletteCount: typeof parsed === 'object' && parsed !== null && 'palette' in parsed && Array.isArray((parsed as any).palette) ? (parsed as any).palette.length : 'N/A',
+    rowCount: typeof parsed === 'object' && parsed !== null && 'rows' in parsed && Array.isArray((parsed as ParsedGroqResponse).rows) ? (parsed as ParsedGroqResponse).rows.length : 'N/A',
+    paletteCount: typeof parsed === 'object' && parsed !== null && 'palette' in parsed && Array.isArray((parsed as ParsedGroqResponse).palette) ? (parsed as ParsedGroqResponse).palette.length : 'N/A',
   });
 
   // Auto-fix: If model generated fewer than 64 rows, pad with transparent rows.
@@ -331,11 +338,11 @@ async function runAttempt(args: {
     typeof parsed === 'object' &&
     parsed !== null &&
     'rows' in parsed &&
-    Array.isArray((parsed as any).rows) &&
+    Array.isArray((parsed as ParsedGroqResponse).rows) &&
     'palette' in parsed &&
-    Array.isArray((parsed as any).palette)
+    Array.isArray((parsed as ParsedGroqResponse).palette)
   ) {
-    const rows = (parsed as any).rows;
+    const rows = (parsed as ParsedGroqResponse).rows;
     const rowCount = rows.length;
     
     if (rowCount > 64) {
@@ -348,7 +355,7 @@ async function runAttempt(args: {
       console.log(`[Groq] 🔧 Auto-padding ${64 - rowCount} missing rows with transparent pixels...`);
       
       // Ensure transparent color in palette
-      const palette = (parsed as any).palette;
+      const palette = (parsed as ParsedGroqResponse).palette;
       let transparentIdx = palette.indexOf('#00000000');
       if (transparentIdx === -1) {
         transparentIdx = palette.length;
@@ -365,7 +372,7 @@ async function runAttempt(args: {
 
     // Auto-fix: If individual row runs don't sum to 64, pad with transparent pixels.
     // Models sometimes generate [[0,32],[1,30]] (sums to 62) instead of 64.
-    const palette = (parsed as any).palette;
+    const palette = (parsed as ParsedGroqResponse).palette;
     let transparentIdx = palette.indexOf('#00000000');
     if (transparentIdx === -1) {
       transparentIdx = palette.length;

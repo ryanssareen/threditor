@@ -1,0 +1,35 @@
+#:schema node_modules/wrangler/config-schema.json
+
+# M17 Unit 2: production Cloudflare Worker for SDXL Lightning skin
+# texture generation. Worker name must remain stable so the deployed
+# URL `https://ai-skin-generator.<account>.workers.dev` does not
+# change (the URL is stored as `CLOUDFLARE_WORKER_URL` in the Vercel
+# env and rotation requires a deploy).
+#
+# Secrets (set via `wrangler secret put`, NEVER committed):
+#   - SDXL_TOKEN            — required. Bearer token shared with Vercel.
+#   - SDXL_TOKEN_PREVIOUS   — optional. Previous bearer accepted in
+#                             parallel during rotation. Drop after the
+#                             Vercel env has rolled to the new token.
+#
+# WAF rate-limit rule (configured in the Cloudflare dashboard, NOT here)
+# is the second layer of abuse defense. Ruleset snapshot lives in
+# `workers/waf-rules.json` for change tracking. See workers/README.md.
+
+name = "ai-skin-generator"
+main = "ai-skin-generator.js"
+compatibility_date = "2025-04-01"
+
+[ai]
+binding = "AI"
+
+# Observability defaults — enable Workers Logs so 401/502 patterns
+# show up in `wrangler tail` and the dashboard without an extra opt-in.
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+
+[placement]
+mode = "smart"

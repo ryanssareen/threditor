@@ -130,7 +130,9 @@ vi.mock('@/lib/firebase/admin', () => ({
 }));
 
 import {
+  AGGREGATE_CLOUDFLARE_CALL_CAP,
   AGGREGATE_TOKEN_CAP,
+  bumpAggregateCloudflareCalls,
   bumpAggregateTokens,
   checkAndIncrement,
   DAY_CAP,
@@ -282,9 +284,101 @@ describe('checkAndIncrement', () => {
       enabled: true,
       todayDate: '20260101', // long ago
       todayTokens: AGGREGATE_TOKEN_CAP + 1_000_000, // would deny if fresh
+      todayCloudflareCalls: AGGREGATE_CLOUDFLARE_CALL_CAP + 1, // would also deny if fresh
     });
     const r = await checkAndIncrement({ uid: 'u', ipHash: '' }, FIXED_NOW);
     expect(r.allowed).toBe(true);
+  });
+
+  it('aggregate kill-switch denies when todayCloudflareCalls > cap', async () => {
+    fakeFirestore.current!.store.set('aiConfig/global', {
+      enabled: true,
+      todayDate: '20260425',
+      todayCloudflareCalls: AGGREGATE_CLOUDFLARE_CALL_CAP + 1,
+    });
+    const r = await checkAndIncrement({ uid: 'u', ipHash: '' }, FIXED_NOW);
+    expect(r.allowed).toBe(false);
+    if (!r.allowed) expect(r.reason).toBe('aggregate');
+  });
+
+  it('aggregate kill-switch allows when both counts are under their caps', async () => {
+    fakeFirestore.current!.store.set('aiConfig/global', {
+      enabled: true,
+      todayDate: '20260425',
+      todayTokens: AGGREGATE_TOKEN_CAP - 1,
+      todayCloudflareCalls: AGGREGATE_CLOUDFLARE_CALL_CAP - 1,
+    });
+    const r = await checkAndIncrement({ uid: 'u', ipHash: '' }, FIXED_NOW);
+    expect(r.allowed).toBe(true);
+  });
+
+  it('aggregate kill-switch denies when token cap is exceeded even if cloudflare cap is not', async () => {
+    fakeFirestore.current!.store.set('aiConfig/global', {
+      enabled: true,
+      todayDate: '20260425',
+      todayTokens: AGGREGATE_TOKEN_CAP + 1,
+      todayCloudflareCalls: 0,
+    });
+    const r = await checkAndIncrement({ uid: 'u', ipHash: '' }, FIXED_NOW);
+    expect(r.allowed).toBe(false);
+  });
+});
+
+describe('bumpAggregateCloudflareCalls', () => {
+  it('creates the aggregate doc on first call with todayDate set', async () => {
+    await bumpAggregateCloudflareCalls(1, FIXED_NOW);
+    const cfg = fakeFirestore.current!.store.get('aiConfig/global');
+    expect(cfg?.todayDate).toBe('20260425');
+    expect(cfg?.todayCloudflareCalls).toBe(1);
+    expect(cfg?.enabled).toBe(true);
+  });
+
+  it('increments same-day calls', async () => {
+    await bumpAggregateCloudflareCalls(1, FIXED_NOW);
+    await bumpAggregateCloudflareCalls(1, FIXED_NOW);
+    await bumpAggregateCloudflareCalls(3, FIXED_NOW);
+    expect(
+      fakeFirestore.current!.store.get('aiConfig/global')?.todayCloudflareCalls,
+    ).toBe(5);
+  });
+
+  it('resets on day rollover', async () => {
+    await bumpAggregateCloudflareCalls(5, FIXED_NOW);
+    const tomorrow = new Date('2026-04-26T01:00:00.000Z');
+    await bumpAggregateCloudflareCalls(2, tomorrow);
+    expect(
+      fakeFirestore.current!.store.get('aiConfig/global')?.todayCloudflareCalls,
+    ).toBe(2);
+    expect(fakeFirestore.current!.store.get('aiConfig/global')?.todayDate).toBe(
+      '20260426',
+    );
+  });
+
+  it('preserves the enabled flag set by an operator', async () => {
+    fakeFirestore.current!.store.set('aiConfig/global', {
+      enabled: false,
+      todayDate: '20260425',
+      todayCloudflareCalls: 100,
+    });
+    await bumpAggregateCloudflareCalls(1, FIXED_NOW);
+    expect(fakeFirestore.current!.store.get('aiConfig/global')?.enabled).toBe(
+      false,
+    );
+  });
+
+  it('ignores zero / non-finite call counts', async () => {
+    await bumpAggregateCloudflareCalls(0, FIXED_NOW);
+    await bumpAggregateCloudflareCalls(NaN, FIXED_NOW);
+    await bumpAggregateCloudflareCalls(-1, FIXED_NOW);
+    expect(fakeFirestore.current!.store.get('aiConfig/global')).toBeUndefined();
+  });
+
+  it('does not clobber an existing todayTokens value', async () => {
+    await bumpAggregateTokens(2000, FIXED_NOW);
+    await bumpAggregateCloudflareCalls(3, FIXED_NOW);
+    const cfg = fakeFirestore.current!.store.get('aiConfig/global');
+    expect(cfg?.todayTokens).toBe(2000);
+    expect(cfg?.todayCloudflareCalls).toBe(3);
   });
 });
 

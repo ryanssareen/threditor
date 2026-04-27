@@ -24,10 +24,12 @@
     "firebase-admin": "^13.8.0",
     "groq-sdk": "^1.1.2",
     "idb-keyval": "6.2.2",
+    "image-q": "^4.0.0",
     "next": "15.5.15",
     "react": "19.2.5",
     "react-dom": "19.2.5",
     "server-only": "^0.0.1",
+    "sharp": "^0.34.5",
     "three": "0.184.0",
     "zustand": "5.0.12"
   },

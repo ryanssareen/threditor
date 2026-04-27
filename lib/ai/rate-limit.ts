@@ -36,6 +36,20 @@ export const IP_HOUR_CAP = 15;
  */
 export const AGGREGATE_TOKEN_CAP = 80_000;
 
+/**
+ * Aggregate Cloudflare call cap. Cloudflare Workers AI free tier is
+ * 10,000 Neurons/day. SDXL Lightning's per-call Neuron cost is not
+ * separately documented but is expected to be roughly 1/3 of base
+ * SDXL because `num_steps: 8` instead of 20. This cap (8,000 calls)
+ * sets a budget assuming Lightning is ≥1.25× cheaper than base SDXL.
+ *
+ * The Groq token cap and the Cloudflare call cap share the same
+ * /aiConfig/global doc and the same kill-switch transaction; either
+ * tripping pauses both providers. Operators can also flip
+ * `enabled: false` on the doc to pause everything immediately.
+ */
+export const AGGREGATE_CLOUDFLARE_CALL_CAP = 8_000;
+
 const TTL_HOURS = 26;
 const MS_PER_HOUR = 60 * 60 * 1000;
 
@@ -137,6 +151,17 @@ export async function checkAndIncrement(
       const todayTokens =
         sameDay && typeof cfg.todayTokens === 'number' ? cfg.todayTokens : 0;
       if (todayTokens > AGGREGATE_TOKEN_CAP) {
+        return {
+          allowed: false,
+          reason: 'aggregate',
+          resetAt: nextDayBoundaryMs(now),
+        };
+      }
+      const todayCloudflareCalls =
+        sameDay && typeof cfg.todayCloudflareCalls === 'number'
+          ? cfg.todayCloudflareCalls
+          : 0;
+      if (todayCloudflareCalls > AGGREGATE_CLOUDFLARE_CALL_CAP) {
         return {
           allowed: false,
           reason: 'aggregate',
@@ -295,6 +320,41 @@ export async function bumpAggregateTokens(
     });
   } catch (err) {
     console.error('bumpAggregateTokens failed:', err);
+  }
+}
+
+/**
+ * Increment the aggregate Cloudflare call counter after a successful
+ * Worker invocation. Resets on day rollover. Best-effort.
+ */
+export async function bumpAggregateCloudflareCalls(
+  n: number = 1,
+  now: Date = new Date(),
+): Promise<void> {
+  if (!Number.isFinite(n) || n <= 0) return;
+  const { db } = getAdminFirebase();
+  const ref = db.collection('aiConfig').doc('global');
+  const dk = dayKey(now);
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const cfg = snap.exists ? snap.data() ?? {} : {};
+      const sameDay = cfg.todayDate === dk;
+      tx.set(
+        ref,
+        {
+          enabled: typeof cfg.enabled === 'boolean' ? cfg.enabled : true,
+          todayDate: dk,
+          todayCloudflareCalls: sameDay
+            ? FieldValue.increment(n)
+            : n,
+        },
+        { merge: true },
+      );
+    });
+  } catch (err) {
+    console.error('bumpAggregateCloudflareCalls failed:', err);
   }
 }
 

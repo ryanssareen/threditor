@@ -66,6 +66,7 @@ describe('logGeneration', () => {
       uid: 'user-1',
       prompt: 'a knight',
       model: 'llama-3.3-70b',
+      provider: 'groq',
       success: true,
       retryCount: 0,
       finishReason: 'stop',
@@ -78,6 +79,7 @@ describe('logGeneration', () => {
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.uid).toBe('user-1');
     expect(written.prompt).toBe('a knight');
+    expect(written.provider).toBe('groq');
     expect(written.success).toBe(true);
     expect(written.tokensIn).toBe(500);
     expect(written.tokensOut).toBe(1500);
@@ -90,6 +92,7 @@ describe('logGeneration', () => {
       uid: 'user-1',
       prompt: 'bad prompt',
       model: 'llama-3.3-70b',
+      provider: 'groq',
       success: false,
       error: 'generation_invalid',
       validationFailureCategory: 'palette_index_oor',
@@ -106,11 +109,33 @@ describe('logGeneration', () => {
     expect(written.retryCount).toBe(1);
   });
 
+  it('writes provider=cloudflare with null token counts on the cloudflare path', async () => {
+    await logGeneration({
+      uid: 'user-1',
+      prompt: 'a knight',
+      model: 'cf/sdxl-lightning',
+      provider: 'cloudflare',
+      success: true,
+      retryCount: 0,
+      finishReason: 'stop',
+      tokensIn: null,
+      tokensOut: null,
+      costEstimate: 0,
+    });
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.provider).toBe('cloudflare');
+    expect(written.model).toBe('cf/sdxl-lightning');
+    expect(written.tokensIn).toBeNull();
+    expect(written.tokensOut).toBeNull();
+    expect(written.costEstimate).toBe(0);
+  });
+
   it('redacts prompt PII before writing', async () => {
     await logGeneration({
       uid: 'user-1',
       prompt: 'reach me at alice@example.com',
       model: 'llama',
+      provider: 'groq',
       success: true,
       retryCount: 0,
       finishReason: 'stop',
@@ -129,6 +154,7 @@ describe('logGeneration', () => {
       uid: 'user-1',
       prompt: 'hi',
       model: 'llama',
+      provider: 'groq',
       success: true,
       retryCount: 0,
       finishReason: 'stop',
@@ -144,6 +170,7 @@ describe('logGeneration', () => {
       uid: 'user-1',
       prompt: 'hi',
       model: 'llama',
+      provider: 'groq',
       success: true,
       retryCount: 0,
       finishReason: 'stop',
