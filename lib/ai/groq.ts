@@ -341,7 +341,9 @@ async function callGroqOnce(args: {
       {
         model: MODEL,
         messages,
-        response_format: { type: 'json_object' },
+        // NOTE: Removed response_format json_object mode because llama-3.3-70b-versatile
+        // returns 400 "json_validate_failed". Relying on prompt engineering instead.
+        // response_format: { type: 'json_object' },
         temperature,
         max_completion_tokens: MAX_COMPLETION_TOKENS,
       },
