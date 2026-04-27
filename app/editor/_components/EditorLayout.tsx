@@ -818,7 +818,7 @@ export function EditorLayout() {
           onOpenAi={() => setAiOpen(true)}
           onOpenNewSkin={() => {
             // Clear undo stack first, then reset document
-            undoStackRef.current.clear();
+            undoStackRef.current?.clear();
             useEditorStore.getState().resetDocument();
           }}
         />
