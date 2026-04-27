@@ -335,8 +335,16 @@ async function runAttempt(args: {
     'palette' in parsed &&
     Array.isArray((parsed as any).palette)
   ) {
-    const rowCount = (parsed as any).rows.length;
-    if (rowCount > 0 && rowCount < 64) {
+    const rows = (parsed as any).rows;
+    const rowCount = rows.length;
+    
+    if (rowCount > 64) {
+      // Too many rows - truncate to 64
+      console.log(`[Groq] 🔧 Auto-truncating ${rowCount - 64} extra rows (had ${rowCount}, need 64)...`);
+      rows.length = 64;
+      console.log(`[Groq] ✅ Truncated to 64 rows`);
+    } else if (rowCount > 0 && rowCount < 64) {
+      // Too few rows - pad with transparent
       console.log(`[Groq] 🔧 Auto-padding ${64 - rowCount} missing rows with transparent pixels...`);
       
       // Ensure transparent color in palette
@@ -348,7 +356,6 @@ async function runAttempt(args: {
       }
       
       // Pad rows
-      const rows = (parsed as any).rows;
       while (rows.length < 64) {
         rows.push([[transparentIdx, 64]]);
       }
