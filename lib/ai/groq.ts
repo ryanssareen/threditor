@@ -324,6 +324,39 @@ async function runAttempt(args: {
     paletteCount: typeof parsed === 'object' && parsed !== null && 'palette' in parsed && Array.isArray((parsed as any).palette) ? (parsed as any).palette.length : 'N/A',
   });
 
+  // Auto-fix: If model generated fewer than 64 rows, pad with transparent rows.
+  // Models often lose count and generate 59-63 rows. Rather than reject valid
+  // JSON, pad the missing rows with [[4, 64]] where palette[4] = "#00000000".
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    'rows' in parsed &&
+    Array.isArray((parsed as any).rows) &&
+    'palette' in parsed &&
+    Array.isArray((parsed as any).palette)
+  ) {
+    const rowCount = (parsed as any).rows.length;
+    if (rowCount > 0 && rowCount < 64) {
+      console.log(`[Groq] 🔧 Auto-padding ${64 - rowCount} missing rows with transparent pixels...`);
+      
+      // Ensure transparent color in palette
+      const palette = (parsed as any).palette;
+      let transparentIdx = palette.indexOf('#00000000');
+      if (transparentIdx === -1) {
+        transparentIdx = palette.length;
+        palette.push('#00000000');
+      }
+      
+      // Pad rows
+      const rows = (parsed as any).rows;
+      while (rows.length < 64) {
+        rows.push([[transparentIdx, 64]]);
+      }
+      
+      console.log(`[Groq] ✅ Padded to 64 rows with palette[${transparentIdx}] = "#00000000"`);
+    }
+  }
+
   // Throws CodecError on any shape problem.
   validateResponse(parsed);
 
