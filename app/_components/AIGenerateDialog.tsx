@@ -233,10 +233,10 @@ export function AIGenerateDialog({ isOpen, onClose, onGenerate }: Props) {
                   data-testid="ai-mode-fast"
                   onClick={() => setMode('groq')}
                   disabled={state === 'loading'}
-                  className={`flex-1 rounded-sm border px-3 py-2 font-mono text-sm transition-all disabled:opacity-50 ${
+                  className={`flex-1 rounded-sm px-3 py-2 font-mono text-sm transition-all disabled:opacity-50 ${
                     mode === 'groq' 
-                      ? 'border-accent bg-accent/10 text-accent shadow-[0_0_12px_rgba(0,229,255,0.3)]' 
-                      : 'border-ui-border bg-ui-base text-text-primary hover:border-accent/60'
+                      ? 'border-2 border-accent bg-accent/15 text-accent shadow-[0_0_16px_rgba(0,229,255,0.4)] ring-2 ring-accent/30' 
+                      : 'border border-ui-border bg-ui-base text-text-primary hover:border-accent/60'
                   }`}
                 >
                   ⚡ Fast
@@ -248,10 +248,10 @@ export function AIGenerateDialog({ isOpen, onClose, onGenerate }: Props) {
                   data-testid="ai-mode-quality"
                   onClick={() => setMode('cloudflare')}
                   disabled={state === 'loading'}
-                  className={`flex-1 rounded-sm border px-3 py-2 font-mono text-sm transition-all disabled:opacity-50 ${
+                  className={`flex-1 rounded-sm px-3 py-2 font-mono text-sm transition-all disabled:opacity-50 ${
                     mode === 'cloudflare' 
-                      ? 'border-accent bg-accent/10 text-accent shadow-[0_0_12px_rgba(0,229,255,0.3)]' 
-                      : 'border-ui-border bg-ui-base text-text-primary hover:border-accent/60'
+                      ? 'border-2 border-accent bg-accent/15 text-accent shadow-[0_0_16px_rgba(0,229,255,0.4)] ring-2 ring-accent/30' 
+                      : 'border border-ui-border bg-ui-base text-text-primary hover:border-accent/60'
                   }`}
                 >
                   ✨ High Quality
