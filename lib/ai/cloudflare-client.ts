@@ -28,18 +28,30 @@ import {
   type CloudflareEnvShape,
 } from './cloudflare-errors';
 import { generateSkinFromImage } from './cloudflare';
+import { generateSkin as generateGroqAtlas } from './groq';
 import { composeRenderPrompt } from './groq-interpreter';
+import { MODEL as GROQ_MODEL } from './prompt';
 import type { AISkinResponse, SkinPartDescriptions } from './types';
 
 /** Cloudflare model identifier as recorded on /aiGenerations.model. */
 export const CLOUDFLARE_MODEL_ID = 'cf/sdxl-lightning';
+
+/**
+ * M17 interim model identifier for the Groq-fallback render path.
+ * Recorded on /aiGenerations.model so dashboards can distinguish
+ * the broken-SDXL-portrait period (`cf/sdxl-lightning`) from the
+ * Groq-fallback period (`groq/llama-3.3-70b-via-cf`).
+ */
+export const CLOUDFLARE_GROQ_FALLBACK_MODEL_ID = `groq/${GROQ_MODEL}-via-cf`;
 
 const BODY_EXCERPT_LEN = 200;
 
 export type CloudflareCallResult = {
   parsed: AISkinResponse;
   durationMs: number;
-  modelId: typeof CLOUDFLARE_MODEL_ID;
+  modelId:
+    | typeof CLOUDFLARE_MODEL_ID
+    | typeof CLOUDFLARE_GROQ_FALLBACK_MODEL_ID;
 };
 
 /**
@@ -128,20 +140,58 @@ export async function generateSkinFromCloudflare(
 }
 
 /**
- * M17 Stage 2: render an `AISkinResponse` from structured per-part
- * descriptions produced by Stage 1 (Groq interpreter).
+ * M17 Stage 3 (interim): render an `AISkinResponse` from structured
+ * per-part descriptions produced by Stage 2 (Groq interpreter).
  *
- * Composes a single rich SDXL prompt that anchors region words
- * ("head", "torso", …) so SDXL aligns body-part details with the
- * corresponding atlas regions. Calls the existing Cloudflare worker
- * (which only accepts `{ prompt }`) — no worker redeploy required.
+ * BUG WE'RE WORKING AROUND
+ * ────────────────────────
+ * Cloudflare's SDXL Lightning generates a *picture of a Minecraft
+ * character* — a portrait, not a UV-format atlas. When that 512×512
+ * portrait is resized to 64×64 and the editor wraps it onto the 3D
+ * cube's UV layout, the atlas regions don't line up with body parts:
+ * the face ends up on the torso, an arm becomes scenery, etc. The
+ * 3D preview shows a broken montage rather than a character.
+ *
+ * The proper fix per DESIGN §15.5 is per-region SDXL: 4-6 parallel
+ * `env.AI.run(SDXL, …)` calls inside the Worker, one per body part,
+ * with sharp / Workers AI compositing into a 64×64 atlas. That
+ * requires a Worker redeploy — out of scope for this hot-fix because
+ * the Worker hardcodes a `character front view` prompt prefix that
+ * fights any per-region attempt from the Vercel side.
+ *
+ * INTERIM FIX
+ * ───────────
+ * Route Stage 3 through Groq's atlas generator (the M16 path). Groq
+ * understands the 64×64 UV layout from its system prompt and emits
+ * palette + RLE rows that are atlas-formatted by construction. The
+ * `composeRenderPrompt(parts)` output gives Groq a richer brief than
+ * the user's raw input, so skins from this path tend to be more
+ * detailed than the M16 baseline despite using the same model.
+ *
+ * Visual quality is Groq-tier (not the SDXL-tier the "High Quality"
+ * label promises) but the output is correct — the atlas wraps onto
+ * the 3D model as a real character. We track this on
+ * /aiGenerations.model = `groq/llama-3.3-70b-via-cf` so dashboards
+ * can distinguish this cohort from the legacy broken-SDXL period.
+ *
+ * To restore real SDXL imagery, see TODO(M18): `workers/ai-skin-generator.js`
+ * needs a per-region rendering branch + composite output.
  */
 export async function generateSkinFromParts(
   parts: SkinPartDescriptions,
   signal: AbortSignal,
 ): Promise<CloudflareCallResult> {
+  const startedAt = Date.now();
   const composed = composeRenderPrompt(parts);
-  return callCloudflareWorker(composed, signal);
+  console.log(
+    '[CF Stage 3] Routing through Groq atlas generator (SDXL portrait → atlas bug interim fix)',
+  );
+  const result = await generateGroqAtlas(composed, signal);
+  return {
+    parsed: result.parsed,
+    durationMs: Date.now() - startedAt,
+    modelId: CLOUDFLARE_GROQ_FALLBACK_MODEL_ID,
+  };
 }
 
 async function callCloudflareWorker(
