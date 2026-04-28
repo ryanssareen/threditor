@@ -91,20 +91,7 @@ function readEnvOrThrow(): { url: string; token: string } {
       'CLOUDFLARE_WORKER_URL is not a parseable URL',
     );
   }
-  // Reject the raw value if it has trailing whitespace that
-  // `.trim()` already absorbed (a fingerprint of bad env-var setup).
-  if ((process.env.CLOUDFLARE_WORKER_URL ?? '') !== url) {
-    throw new CloudflareEnvError(
-      shape,
-      'CLOUDFLARE_WORKER_URL has leading/trailing whitespace',
-    );
-  }
-  if ((process.env.CLOUDFLARE_WORKER_TOKEN ?? '') !== token) {
-    throw new CloudflareEnvError(
-      shape,
-      'CLOUDFLARE_WORKER_TOKEN has leading/trailing whitespace',
-    );
-  }
+  // NOTE: We trim the values above, so trailing whitespace is handled gracefully
   return { url, token };
 }
 
