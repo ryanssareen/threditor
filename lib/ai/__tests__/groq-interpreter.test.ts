@@ -18,6 +18,7 @@ vi.mock('server-only', () => ({}));
 
 import { GroqValidationError } from '../groq';
 import {
+  buildUserMessage,
   composeRenderPrompt,
   validateParts,
 } from '../groq-interpreter';
@@ -117,6 +118,58 @@ describe('validateParts', () => {
       'stop',
     );
     expect(result.head).toBe('pale skin, sad eyes');
+  });
+});
+
+describe('buildUserMessage', () => {
+  it('returns the bare prompt when no answers are provided', () => {
+    expect(buildUserMessage('a knight', null)).toBe('a knight');
+    expect(buildUserMessage('a knight', {})).toBe('a knight');
+  });
+
+  it('appends string answers as `- key: value` lines', () => {
+    const result = buildUserMessage('a knight', { style: 'Pixel art', armor: 'Plate' });
+    expect(result).toContain('a knight');
+    expect(result).toContain('User preferences:');
+    expect(result).toContain('- style: Pixel art');
+    expect(result).toContain('- armor: Plate');
+  });
+
+  it('joins array answers with commas', () => {
+    const result = buildUserMessage('a knight', {
+      accessories: ['Helmet', 'Cape', 'Sword'],
+    });
+    expect(result).toContain('- accessories: Helmet, Cape, Sword');
+  });
+
+  it('drops empty / whitespace values', () => {
+    const result = buildUserMessage('a knight', {
+      style: 'Pixel art',
+      empty: '',
+      blank: '   ',
+      emptyArr: [],
+    });
+    expect(result).toContain('- style: Pixel art');
+    expect(result).not.toContain('empty');
+    expect(result).not.toContain('blank');
+    expect(result).not.toContain('emptyArr');
+  });
+
+  it('clamps overlong values', () => {
+    const huge = 'x'.repeat(500);
+    const result = buildUserMessage('a knight', { style: huge });
+    // Single-string values are capped at 80 chars in the rendered line.
+    const styleLine = result.split('\n').find((l) => l.startsWith('- style'));
+    expect(styleLine).toBeDefined();
+    expect((styleLine ?? '').length).toBeLessThanOrEqual(120);
+  });
+
+  it('treats arrays as non-string-safe (drops non-string members)', () => {
+    const result = buildUserMessage('a knight', {
+      mixed: ['Helmet', 42 as unknown as string, 'Cape'],
+    });
+    expect(result).toContain('- mixed: Helmet, Cape');
+    expect(result).not.toContain('42');
   });
 });
 

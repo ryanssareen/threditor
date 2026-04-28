@@ -29,11 +29,12 @@ export type AISkinResponse = {
 };
 
 /**
- * M17 Stage 1 output. Produced by `lib/ai/groq-interpreter.ts`.
+ * M17 Stage 2 output. Produced by `lib/ai/groq-interpreter.ts`.
  *
  * Structured per-part description of a Minecraft skin, derived from
- * the user's freeform prompt. Stage 2 (Cloudflare) composes a rich
- * region-aware SDXL prompt from these parts.
+ * the user's freeform prompt + (optionally) clarification answers.
+ * Stage 3 (Cloudflare) composes a rich region-aware SDXL prompt from
+ * these parts.
  *
  * Overlay layers (`headOverlay`, `torsoOverlay`) are optional — they
  * exist to capture helmets/capes/hoods/jackets that sit on top of the
@@ -51,6 +52,46 @@ export type SkinPartDescriptions = {
   leftLeg: string;
   variant: 'classic' | 'slim';
 };
+
+/**
+ * M17 Stage 1: a single clarification question Groq emits when the
+ * user's prompt is ambiguous.
+ *
+ * `id` is a stable slug ('style', 'armor_type', 'crying_intensity', …)
+ * the interpreter uses to feed answers back into Stage 2. `type`
+ * is the UI rendering hint — single_select renders a radio-pill row,
+ * multi_select renders multi-toggle pills.
+ *
+ * `options` is a closed list of 2-6 short labels. Free-form input is
+ * deliberately omitted to keep the pipeline deterministic and to
+ * defend against prompt injection through the answer channel.
+ */
+export type ClarificationQuestion = {
+  id: string;
+  question: string;
+  options: string[];
+  type: 'single_select' | 'multi_select';
+};
+
+/**
+ * M17 Stage 1 output. The clarifier returns either:
+ *   - `needsClarification: true` with a non-empty `questions` array
+ *     → the route forwards them to the dialog.
+ *   - `needsClarification: false`
+ *     → the route falls through to Stage 2 immediately.
+ */
+export type ClarificationResponse = {
+  needsClarification: boolean;
+  questions?: ClarificationQuestion[];
+};
+
+/**
+ * Map of `ClarificationQuestion.id` → answer.
+ * Single-select questions resolve to `string`, multi-select to
+ * `string[]`. Always populated from the closed `options` list — the
+ * dialog never permits free-form text.
+ */
+export type UserAnswers = Record<string, string | string[]>;
 
 /**
  * Discrete reasons a payload can fail validation. The route maps these

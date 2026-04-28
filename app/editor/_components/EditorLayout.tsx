@@ -56,6 +56,17 @@ const AIGenerateDialog = dynamic(
   { ssr: false },
 );
 
+// M17 Stage-1 UI: clarifying-questions dialog. Lazy-loaded same as
+// AIGenerateDialog — the bundle is small but only the AI users pay
+// for it.
+const AIClarificationDialog = dynamic(
+  () =>
+    import('@/app/_components/AIClarificationDialog').then(
+      (m) => m.AIClarificationDialog,
+    ),
+  { ssr: false },
+);
+
 export function EditorLayout() {
   const variant = useEditorStore((s) => s.variant);
   const layers = useEditorStore((s) => s.layers);
@@ -107,6 +118,16 @@ export function EditorLayout() {
   const [publishOpen, setPublishOpen] = useState(false);
   // M16: AI generation dialog open state.
   const [aiOpen, setAiOpen] = useState(false);
+
+  // M17 Stage-1: clarification handoff state. Set when /api/ai/generate
+  // returns `{ status: 'needs_clarification', questions }` so the
+  // editor can mount the AIClarificationDialog with the same prompt
+  // + mode the user just submitted.
+  const [clarification, setClarification] = useState<{
+    questions: import('@/lib/ai/types').ClarificationQuestion[];
+    prompt: string;
+    mode: 'groq' | 'cloudflare';
+  } | null>(null);
 
   // M8 Unit 7/8: first-paint sequence.
   //
@@ -622,20 +643,36 @@ export function EditorLayout() {
     [bundle, variant],
   );
 
-  // M16 Unit 6: AI generation handler.
+  // M16 Unit 6 + M17: AI generation handler.
   //
-  // Pipeline:
+  // Pipeline (M17 three-stage):
   //   1. Fetch /api/ai/generate with Bearer token.
-  //   2. Parse `{ palette, rows }`, decode to a 16384-byte buffer.
-  //   3. Build a new Layer named `AI: <prompt-truncated>`.
-  //   4. addLayer + push 'layer-add' undo command + markEdited.
+  //   2a. If response is `{ status: 'needs_clarification', questions }`
+  //       → store in `clarification` state and return. The
+  //       AIClarificationDialog mounts and re-fires the request with
+  //       `userAnswers` + `skipClarification: true` once the user
+  //       picks options.
+  //   2b. Otherwise parse `{ palette, rows }`, decode to a 16384-byte
+  //       buffer, build a new Layer.
+  //   3. addLayer + push 'layer-add' undo command + markEdited.
   //
   // Errors are translated to user-facing messages the dialog renders.
   // The codec lives in lib/ai/skin-codec.ts which is a pure module
   // (no `'server-only'`); importing it dynamically here keeps it off
   // the editor's critical path.
-  const handleAiGenerate = useCallback(
-    async (prompt: string, mode: 'groq' | 'cloudflare' = 'groq'): Promise<void> => {
+  const fetchAndApplySkin = useCallback(
+    async (
+      prompt: string,
+      mode: 'groq' | 'cloudflare',
+      userAnswers: import('@/lib/ai/types').UserAnswers | null,
+      skipClarification: boolean,
+    ): Promise<
+      | { kind: 'applied' }
+      | {
+          kind: 'needs_clarification';
+          questions: import('@/lib/ai/types').ClarificationQuestion[];
+        }
+    > => {
       const { getFirebase } = await import('@/lib/firebase/client');
       const { auth } = getFirebase();
       const currentUser = auth.currentUser;
@@ -646,6 +683,10 @@ export function EditorLayout() {
       }
       const idToken = await currentUser.getIdToken(false);
 
+      const body: Record<string, unknown> = { prompt, mode };
+      if (userAnswers !== null) body.userAnswers = userAnswers;
+      if (skipClarification) body.skipClarification = true;
+
       // Client-side timeout slightly higher than the server's 30s cap
       // so the server's typed `timeout` response wins the race.
       const res = await fetch('/api/ai/generate', {
@@ -654,7 +695,7 @@ export function EditorLayout() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${idToken}`,
         },
-        body: JSON.stringify({ prompt, mode }), // M17: pass mode
+        body: JSON.stringify(body),
         credentials: 'include',
         signal: AbortSignal.timeout(45_000),
       });
@@ -667,7 +708,6 @@ export function EditorLayout() {
           // body wasn't JSON
         }
         const code = typeof payload.error === 'string' ? payload.error : '';
-        // User-facing copy. Granular telemetry in DevTools console.
         let msg: string;
         switch (code) {
           case 'rate_limited': {
@@ -715,13 +755,29 @@ export function EditorLayout() {
       }
 
       const data = (await res.json()) as {
-        palette: string[];
-        rows: [number, number][][];
+        status?: string;
+        questions?: import('@/lib/ai/types').ClarificationQuestion[];
+        palette?: string[];
+        rows?: [number, number][][];
       };
+
+      if (data.status === 'needs_clarification') {
+        const qs = Array.isArray(data.questions) ? data.questions : [];
+        if (qs.length === 0) {
+          // Should never happen — server validates non-empty before
+          // returning this status. Treat as graceful skip.
+          throw new Error('Clarification requested but no questions returned.');
+        }
+        return { kind: 'needs_clarification', questions: qs };
+      }
+
+      if (!Array.isArray(data.palette) || !Array.isArray(data.rows)) {
+        throw new Error('Generation response was malformed.');
+      }
 
       // Codec is a pure module — safe to dynamically import here.
       const { decode } = await import('@/lib/ai/skin-codec');
-      const pixels = decode(data);
+      const pixels = decode({ palette: data.palette, rows: data.rows });
 
       const id =
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -743,9 +799,46 @@ export function EditorLayout() {
       // M7 invariant: any apply path must mark edited so the
       // first-paint sequence cancels and saving picks up the change.
       useEditorStore.getState().markEdited();
+
+      return { kind: 'applied' };
     },
     [handleLayerUndoPush],
   );
+
+  // First call from AIGenerateDialog (no answers, may trigger Stage-1).
+  const handleAiGenerate = useCallback(
+    async (prompt: string, mode: 'groq' | 'cloudflare' = 'groq'): Promise<void> => {
+      const result = await fetchAndApplySkin(prompt, mode, null, false);
+      if (result.kind === 'needs_clarification') {
+        // Hand off to the clarification dialog. AIGenerateDialog will
+        // resolve to its 'success' state briefly then auto-close;
+        // since AIClarificationDialog opens as well, the user sees a
+        // smooth dialog swap rather than a flash of "Generated!".
+        setAiOpen(false);
+        setClarification({ questions: result.questions, prompt, mode });
+      }
+    },
+    [fetchAndApplySkin],
+  );
+
+  // Submit-with-answers from AIClarificationDialog.
+  const handleClarificationSubmit = useCallback(
+    async (answers: import('@/lib/ai/types').UserAnswers): Promise<void> => {
+      if (clarification === null) return;
+      // Pass `skipClarification=true` so the route bypasses Stage 1
+      // on the second round-trip — we already have the user's answers.
+      await fetchAndApplySkin(clarification.prompt, clarification.mode, answers, true);
+      setClarification(null);
+    },
+    [clarification, fetchAndApplySkin],
+  );
+
+  // Skip-questions path — generate with just the original prompt.
+  const handleClarificationSkip = useCallback(async (): Promise<void> => {
+    if (clarification === null) return;
+    await fetchAndApplySkin(clarification.prompt, clarification.mode, null, true);
+    setClarification(null);
+  }, [clarification, fetchAndApplySkin]);
 
   // M10: h-dvh - 3.5rem leaves 56px (h-14) at the top for the fixed
   // EditorHeader, so the 2D + 3D + sidebar flex layout fits in the
@@ -845,6 +938,18 @@ export function EditorLayout() {
         onClose={() => setAiOpen(false)}
         onGenerate={handleAiGenerate}
       />
+
+      {/* M17 Stage 1: clarification dialog — only mounted while we
+          have pending questions from the route. */}
+      {clarification !== null && (
+        <AIClarificationDialog
+          isOpen={true}
+          questions={clarification.questions}
+          onSubmit={handleClarificationSubmit}
+          onSkip={handleClarificationSkip}
+          onClose={() => setClarification(null)}
+        />
+      )}
     </div>
     </>
   );

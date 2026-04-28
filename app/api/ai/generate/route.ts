@@ -76,8 +76,9 @@ import {
   getCloudflareEnvShape,
 } from '@/lib/ai/cloudflare-client';
 import { interpretPromptToSkinParts } from '@/lib/ai/groq-interpreter';
+import { analyzePromptForClarification } from '@/lib/ai/groq-clarifier';
 import { costEstimateUsd, HARD_TIMEOUT_MS, MODEL } from '@/lib/ai/prompt';
-import type { AISkinResponse } from '@/lib/ai/types';
+import type { AISkinResponse, UserAnswers } from '@/lib/ai/types';
 
 const PROMPT_MAX_LEN = 200;
 // Match `[\p{Cc}\p{Cf}\p{Co}\p{Cn}]` — control bytes, format/bidi
@@ -203,32 +204,30 @@ type ProviderResult = {
 async function callProvider(
   provider: Provider,
   prompt: string,
+  userAnswers: UserAnswers | null,
   signal: AbortSignal,
 ): Promise<ProviderResult> {
   if (provider === 'cloudflare') {
-    // M17 Two-stage pipeline:
-    //   Stage 1: Groq interprets the user prompt into structured
-    //            per-part `SkinPartDescriptions`.
-    //   Stage 2: Cloudflare worker renders a 64×64 skin from a rich
+    // M17 Stages 2+3 (Stage 1 — clarifier — runs in the route handler
+    // before we get here):
+    //   Stage 2: Groq interprets the user prompt + clarification
+    //            answers into structured per-part `SkinPartDescriptions`.
+    //   Stage 3: Cloudflare worker renders a 64×64 skin from a rich
     //            region-aware composed prompt.
-    //
-    // If Stage 1 fails with a non-fatal Groq error, the caller's
-    // catch cascade reports it the same way it does for the M16 path
-    // (rate-limit / timeout / etc are reused). We do NOT silently fall
-    // back to single-stage — quality is the whole point of M17.
-    console.log('[AI Generation] 🧠 Stage 1: Groq interpreting prompt → parts');
-    const stage1 = await interpretPromptToSkinParts(prompt, signal);
-    console.log('[AI Generation] ✅ Stage 1 complete:', {
-      variant: stage1.parts.variant,
-      hasHeadOverlay: stage1.parts.headOverlay !== undefined,
-      hasTorsoOverlay: stage1.parts.torsoOverlay !== undefined,
-      promptTokens: stage1.promptTokens,
-      completionTokens: stage1.completionTokens,
+    console.log('[AI Generation] 🧠 Stage 2: Groq interpreting prompt → parts');
+    const stage2 = await interpretPromptToSkinParts(prompt, userAnswers, signal);
+    console.log('[AI Generation] ✅ Stage 2 complete:', {
+      variant: stage2.parts.variant,
+      hasHeadOverlay: stage2.parts.headOverlay !== undefined,
+      hasTorsoOverlay: stage2.parts.torsoOverlay !== undefined,
+      hasUserAnswers: userAnswers !== null,
+      promptTokens: stage2.promptTokens,
+      completionTokens: stage2.completionTokens,
     });
 
-    console.log('[AI Generation] 🎨 Stage 2: Cloudflare rendering parts → skin');
-    const r = await generateSkinFromParts(stage1.parts, signal);
-    console.log('[AI Generation] ✅ Stage 2 complete:', {
+    console.log('[AI Generation] 🎨 Stage 3: Cloudflare rendering parts → skin');
+    const r = await generateSkinFromParts(stage2.parts, signal);
+    console.log('[AI Generation] ✅ Stage 3 complete:', {
       durationMs: r.durationMs,
       paletteSize: r.parsed.palette.length,
     });
@@ -237,12 +236,9 @@ async function callProvider(
       parsed: r.parsed,
       retryCount: 0,
       finishReason: 'stop',
-      // Stage-1 Groq tokens are real; Stage-2 Cloudflare has none.
-      // Surface the Stage-1 numbers so /aiGenerations cost rollups
-      // catch the (small) interpreter spend.
-      tokensIn: stage1.promptTokens,
-      tokensOut: stage1.completionTokens,
-      totalTokens: stage1.totalTokens,
+      tokensIn: stage2.promptTokens,
+      tokensOut: stage2.completionTokens,
+      totalTokens: stage2.totalTokens,
       modelId: r.modelId,
     };
   }
@@ -256,6 +252,49 @@ async function callProvider(
     totalTokens: r.totalTokens ?? 0,
     modelId: MODEL,
   };
+}
+
+/**
+ * Validate `userAnswers` from the request body. Returns:
+ *   - `null` when the field is missing / null / not an object
+ *   - a normalized `UserAnswers` map otherwise (keys clamped, values
+ *     coerced to string / string[]; non-string values dropped)
+ *
+ * Per-key cap is 40 chars, per-value 80, max 16 keys. Defends against
+ * the answer channel becoming a side-channel for prompt injection or
+ * cost amplification.
+ */
+function normalizeUserAnswers(raw: unknown): UserAnswers | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const obj = raw as Record<string, unknown>;
+  const out: UserAnswers = {};
+  let count = 0;
+  for (const [k, v] of Object.entries(obj)) {
+    if (count >= 16) break;
+    const key = String(k).trim().slice(0, 40);
+    if (key.length === 0) continue;
+    if (typeof v === 'string') {
+      const value = v.trim().slice(0, 80);
+      if (value.length === 0) continue;
+      out[key] = value;
+      count++;
+    } else if (Array.isArray(v)) {
+      const arr: string[] = [];
+      for (const item of v.slice(0, 8)) {
+        if (typeof item !== 'string') continue;
+        const t = item.trim().slice(0, 80);
+        if (t.length === 0) continue;
+        arr.push(t);
+      }
+      if (arr.length > 0) {
+        out[key] = arr;
+        count++;
+      }
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 // ── POST handler ─────────────────────────────────────────────────────
@@ -314,8 +353,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     modeRaw === 'cloudflare' || modeRaw === 'groq'
       ? modeRaw
       : readProvider(); // fallback to env var
-  
+
   console.log('[AI Generation] 🎯 Provider selected:', provider);
+
+  // M17 Stage-1 inputs:
+  //   - `userAnswers` — present on the second round-trip after the
+  //     dialog gathers clarification responses.
+  //   - `skipClarification` — true when the caller wants to bypass the
+  //     clarifier entirely (e.g., simple prompt the user knows is fine,
+  //     or repeated retries).
+  const userAnswers: UserAnswers | null = normalizeUserAnswers(
+    bodyJson !== null && typeof bodyJson === 'object' && 'userAnswers' in bodyJson
+      ? (bodyJson as { userAnswers: unknown }).userAnswers
+      : undefined,
+  );
+  const skipClarification =
+    bodyJson !== null &&
+    typeof bodyJson === 'object' &&
+    'skipClarification' in bodyJson &&
+    (bodyJson as { skipClarification: unknown }).skipClarification === true;
+  console.log('[AI Generation] 🛠 Clarification flags:', {
+    hasUserAnswers: userAnswers !== null,
+    skipClarification,
+  });
 
   // 2. Auth.
   const auth = await resolveSession(req);
@@ -325,6 +385,49 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // 3. Hash IP.
   const ip = clientIpFrom(req);
   const ipHash = await hashIp(ip);
+
+  // M17 Stage 1 — Clarifier. Runs BEFORE rate-limit consumption when
+  // the caller hasn't already answered questions and hasn't asked us
+  // to skip. The clarifier is cheap (~300 tokens) and runs only once
+  // per user-initiated generation; we don't burn a generation slot
+  // for it, so users aren't penalized for the dialog round-trip.
+  //
+  // Only the `cloudflare` provider runs the clarifier — the `groq`
+  // provider's M16 path is a single-call generator with its own
+  // prompt strategy, and adding clarification there would change its
+  // observed cost / behavior unrelated to the M17 lift.
+  const shouldClarify =
+    provider === 'cloudflare' && !skipClarification && userAnswers === null;
+  if (shouldClarify) {
+    const clarifySignal = AbortSignal.timeout(HARD_TIMEOUT_MS);
+    const combined = combineSignals(req.signal, clarifySignal);
+    try {
+      console.log('[AI Generation] ❓ Stage 1: Clarifier analyzing prompt');
+      const clarifyResult = await analyzePromptForClarification(prompt, combined);
+      if (clarifyResult.response.needsClarification) {
+        console.log('[AI Generation] ↩ Returning clarification questions:', {
+          count: clarifyResult.response.questions?.length ?? 0,
+        });
+        // No slot burned — questions returned without consuming the
+        // user's daily / hourly generation budget.
+        return privateNoStore(
+          NextResponse.json({
+            status: 'needs_clarification',
+            questions: clarifyResult.response.questions,
+          }),
+        );
+      }
+      console.log('[AI Generation] ✅ Clarifier: no questions needed, proceeding');
+    } catch (err) {
+      // Clarifier failure should NOT block the user — fall through to
+      // generation without answers. Log so we can spot a chronically
+      // broken Stage-1 in production.
+      console.warn('[AI Generation] ⚠ Stage-1 clarifier failed, proceeding without:', {
+        errorName: err instanceof Error ? err.constructor.name : typeof err,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   // 4. Rate-limit check + increment.
   let rateGate;
@@ -359,7 +462,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   });
 
   try {
-    const result = await callProvider(provider, prompt, signal);
+    const result = await callProvider(provider, prompt, userAnswers, signal);
 
     console.log('[AI Generation] ✅ Success:', {
       promptPreview: prompt.substring(0, 50) + '...',

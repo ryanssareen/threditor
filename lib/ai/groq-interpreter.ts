@@ -36,7 +36,7 @@ import {
   getGroqKeyShape,
 } from './groq';
 import { HARD_TIMEOUT_MS } from './prompt';
-import type { SkinPartDescriptions } from './types';
+import type { SkinPartDescriptions, UserAnswers } from './types';
 
 /** Stage-1 model. Same as the M16 main path — no separate billing concerns. */
 export const INTERPRETER_MODEL = 'llama-3.3-70b-versatile';
@@ -95,13 +95,19 @@ export type InterpretResult = {
 };
 
 /**
- * Stage 1: prompt → structured per-part descriptions.
+ * Stage 2: prompt (+ optional clarification answers) → structured
+ * per-part descriptions.
+ *
+ * `userAnswers` is the map produced by `AIClarificationDialog`. When
+ * non-null, it's appended to the user message as `User preferences:`
+ * lines so Groq folds them into the descriptions deterministically.
  *
  * Throws the same Groq* error types as the main M16 generator so the
  * route's existing handleProviderError cascade catches them.
  */
 export async function interpretPromptToSkinParts(
   userPrompt: string,
+  userAnswers: UserAnswers | null,
   signal: AbortSignal,
 ): Promise<InterpretResult> {
   const keyShape = getGroqKeyShape();
@@ -119,6 +125,8 @@ export async function interpretPromptToSkinParts(
     maxRetries: 1,
   });
 
+  const enhancedPrompt = buildUserMessage(userPrompt, userAnswers);
+
   let completion;
   try {
     completion = await client.chat.completions.create(
@@ -126,7 +134,7 @@ export async function interpretPromptToSkinParts(
         model: INTERPRETER_MODEL,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt },
+          { role: 'user', content: enhancedPrompt },
         ],
         temperature: INTERPRETER_TEMPERATURE,
         max_completion_tokens: INTERPRETER_MAX_TOKENS,
@@ -171,6 +179,47 @@ export async function interpretPromptToSkinParts(
     totalTokens: completion?.usage?.total_tokens ?? null,
     finishReason,
   };
+}
+
+/**
+ * Compose the user-side message: prompt followed by clarification
+ * answers as `- key: value` lines. Empty / null answers are skipped.
+ *
+ * Length-cap each value to 80 chars to defend against an answer
+ * channel being abused for prompt injection or to balloon Stage-2
+ * cost.
+ */
+export function buildUserMessage(
+  userPrompt: string,
+  userAnswers: UserAnswers | null,
+): string {
+  if (
+    userAnswers === null ||
+    typeof userAnswers !== 'object' ||
+    Array.isArray(userAnswers)
+  ) {
+    return userPrompt;
+  }
+  const entries = Object.entries(userAnswers).filter(([, v]) => {
+    if (typeof v === 'string') return v.trim().length > 0;
+    if (Array.isArray(v)) return v.some((s) => typeof s === 'string' && s.trim().length > 0);
+    return false;
+  });
+  if (entries.length === 0) return userPrompt;
+
+  const lines = entries.map(([key, raw]) => {
+    const k = String(key).trim().slice(0, 40);
+    if (Array.isArray(raw)) {
+      const joined = raw
+        .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+        .map((s) => s.trim())
+        .join(', ')
+        .slice(0, 200);
+      return `- ${k}: ${joined}`;
+    }
+    return `- ${k}: ${String(raw).trim().slice(0, 80)}`;
+  });
+  return `${userPrompt}\n\nUser preferences:\n${lines.join('\n')}`;
 }
 
 /**
