@@ -28,21 +28,19 @@ import {
   type CloudflareEnvShape,
 } from './cloudflare-errors';
 import { generateSkinFromImage } from './cloudflare';
-import { generateSkin as generateGroqAtlas } from './groq';
-import { composeRenderPrompt } from './groq-interpreter';
-import { MODEL as GROQ_MODEL } from './prompt';
+import { compositeSkinAtlas } from './cloudflare-composite';
 import type { AISkinResponse, SkinPartDescriptions } from './types';
 
 /** Cloudflare model identifier as recorded on /aiGenerations.model. */
 export const CLOUDFLARE_MODEL_ID = 'cf/sdxl-lightning';
 
 /**
- * M17 interim model identifier for the Groq-fallback render path.
- * Recorded on /aiGenerations.model so dashboards can distinguish
- * the broken-SDXL-portrait period (`cf/sdxl-lightning`) from the
- * Groq-fallback period (`groq/llama-3.3-70b-via-cf`).
+ * M17 v2 model identifier for the per-region SDXL render path.
+ * Recorded on /aiGenerations.model so dashboards distinguish
+ * the per-region cohort from the legacy single-call portrait period
+ * (`cf/sdxl-lightning`) and the brief Groq-fallback period.
  */
-export const CLOUDFLARE_GROQ_FALLBACK_MODEL_ID = `groq/${GROQ_MODEL}-via-cf`;
+export const CLOUDFLARE_PER_REGION_MODEL_ID = 'cf/sdxl-lightning-x6';
 
 const BODY_EXCERPT_LEN = 200;
 
@@ -51,7 +49,7 @@ export type CloudflareCallResult = {
   durationMs: number;
   modelId:
     | typeof CLOUDFLARE_MODEL_ID
-    | typeof CLOUDFLARE_GROQ_FALLBACK_MODEL_ID;
+    | typeof CLOUDFLARE_PER_REGION_MODEL_ID;
 };
 
 /**
@@ -140,58 +138,198 @@ export async function generateSkinFromCloudflare(
 }
 
 /**
- * M17 Stage 3 (interim): render an `AISkinResponse` from structured
- * per-part descriptions produced by Stage 2 (Groq interpreter).
+ * M17 v2 — per-region SDXL pipeline.
  *
- * BUG WE'RE WORKING AROUND
- * ────────────────────────
- * Cloudflare's SDXL Lightning generates a *picture of a Minecraft
- * character* — a portrait, not a UV-format atlas. When that 512×512
- * portrait is resized to 64×64 and the editor wraps it onto the 3D
- * cube's UV layout, the atlas regions don't line up with body parts:
- * the face ends up on the torso, an arm becomes scenery, etc. The
- * 3D preview shows a broken montage rather than a character.
+ * Stage 3 of the clarifier → interpreter → renderer pipeline. Takes
+ * structured per-part descriptions and produces an atlas-formatted
+ * `AISkinResponse` whose UV regions line up with the 3D model.
  *
- * The proper fix per DESIGN §15.5 is per-region SDXL: 4-6 parallel
- * `env.AI.run(SDXL, …)` calls inside the Worker, one per body part,
- * with sharp / Workers AI compositing into a 64×64 atlas. That
- * requires a Worker redeploy — out of scope for this hot-fix because
- * the Worker hardcodes a `character front view` prompt prefix that
- * fights any per-region attempt from the Vercel side.
+ * STRATEGY
+ * ────────
+ * Make 6 parallel Cloudflare SDXL calls — one per body part (head,
+ * torso, R/L arm, R/L leg) — each with a focused per-part prompt.
+ * Each call returns a 512×512 portrait of *that* body part. Then
+ * `compositeSkinAtlas` (sharp on the Vercel side) blits each
+ * 512×512 source into all six faces of its corresponding cuboid in
+ * a 64×64 transparent canvas, using the canonical Minecraft 1.8+
+ * UV layout from `cloudflare-atlas.ts`. The composited atlas is
+ * then quantized + RLE-encoded by the existing `generateSkinFromImage`
+ * pipeline so the final response shape is identical to every other
+ * provider.
  *
- * INTERIM FIX
- * ───────────
- * Route Stage 3 through Groq's atlas generator (the M16 path). Groq
- * understands the 64×64 UV layout from its system prompt and emits
- * palette + RLE rows that are atlas-formatted by construction. The
- * `composeRenderPrompt(parts)` output gives Groq a richer brief than
- * the user's raw input, so skins from this path tend to be more
- * detailed than the M16 baseline despite using the same model.
+ * This replaces the broken single-call SDXL portrait approach (which
+ * produced a picture of a character that, when wrapped on the cube,
+ * looked like a montage of misaligned face/body fragments) and the
+ * brief Groq-fallback workaround.
  *
- * Visual quality is Groq-tier (not the SDXL-tier the "High Quality"
- * label promises) but the output is correct — the atlas wraps onto
- * the 3D model as a real character. We track this on
- * /aiGenerations.model = `groq/llama-3.3-70b-via-cf` so dashboards
- * can distinguish this cohort from the legacy broken-SDXL period.
+ * COSTS
+ * ─────
+ * Each SDXL Lightning call is ~1500 Neurons; 6 parallel calls
+ * ≈ 9000 Neurons per generation, well inside Cloudflare's free-tier
+ * envelope. The 6 calls run in parallel so wallclock is ~same as
+ * one call (~3-4s).
  *
- * To restore real SDXL imagery, see TODO(M18): `workers/ai-skin-generator.js`
- * needs a per-region rendering branch + composite output.
+ * QUIRKS
+ * ──────
+ * The deployed Worker prepends a fixed prefix
+ * (`pixel art, 64x64 minecraft skin texture, character front view, …`)
+ * to every prompt. Per-region prompts therefore arrive at SDXL with
+ * a slight contradiction (`character front view, head only`), which
+ * SDXL handles by emphasizing the head. Output quality is acceptable;
+ * a future Worker change to skip the prefix when given a `region`
+ * flag would help further.
  */
 export async function generateSkinFromParts(
   parts: SkinPartDescriptions,
   signal: AbortSignal,
 ): Promise<CloudflareCallResult> {
   const startedAt = Date.now();
-  const composed = composeRenderPrompt(parts);
-  console.log(
-    '[CF Stage 3] Routing through Groq atlas generator (SDXL portrait → atlas bug interim fix)',
-  );
-  const result = await generateGroqAtlas(composed, signal);
+  const partPrompts = buildPartPrompts(parts);
+
+  console.log('[CF Stage 3] Per-region SDXL: 6 parallel Worker calls');
+
+  // Parallel fan-out. `Promise.all` rejects on the first failure,
+  // which is what we want — if any part fails the whole skin is
+  // unusable. Errors are typed (CloudflareXxxError) so the route's
+  // existing catch cascade maps them correctly.
+  const [
+    headBuf,
+    torsoBuf,
+    rightArmBuf,
+    leftArmBuf,
+    rightLegBuf,
+    leftLegBuf,
+  ] = await Promise.all([
+    fetchPartImage(partPrompts.head, signal),
+    fetchPartImage(partPrompts.torso, signal),
+    fetchPartImage(partPrompts.rightArm, signal),
+    fetchPartImage(partPrompts.leftArm, signal),
+    fetchPartImage(partPrompts.rightLeg, signal),
+    fetchPartImage(partPrompts.leftLeg, signal),
+  ]);
+
+  console.log('[CF Stage 3] All 6 parts received, compositing atlas');
+
+  // Composite all 6 part images into a 64×64 RGBA atlas with proper
+  // UV layout. Throws ImageProcessingError on sharp failure.
+  const atlasBuf = await compositeSkinAtlas({
+    head: headBuf,
+    torso: torsoBuf,
+    rightArm: rightArmBuf,
+    leftArm: leftArmBuf,
+    rightLeg: rightLegBuf,
+    leftLeg: leftLegBuf,
+    variant: parts.variant,
+  });
+
+  // Run the existing quantize + RLE pipeline. The atlas is already
+  // 64×64 so the resize step is a pass-through, but we keep the call
+  // so the response shape is identical to every other provider and
+  // any future format tweaks land in one place.
+  const parsed = await generateSkinFromImage(atlasBuf);
+
   return {
-    parsed: result.parsed,
+    parsed,
     durationMs: Date.now() - startedAt,
-    modelId: CLOUDFLARE_GROQ_FALLBACK_MODEL_ID,
+    modelId: CLOUDFLARE_PER_REGION_MODEL_ID,
   };
+}
+
+/**
+ * Build one focused SDXL prompt per body part. The deployed Worker
+ * prepends its own `pixel art, 64x64 minecraft skin texture, …`
+ * prefix, so we DON'T re-include those tokens; we focus on the
+ * specific body part and its description.
+ *
+ * `single isolated <part> on plain background` is the key phrase
+ * that gets SDXL to emit a centered portrait of just one body part
+ * rather than a full character. The trailing `no body, no other
+ * limb` is a soft negative that further suppresses the Worker
+ * prefix's `character front view` push.
+ */
+function buildPartPrompts(parts: SkinPartDescriptions): {
+  head: string;
+  torso: string;
+  rightArm: string;
+  leftArm: string;
+  rightLeg: string;
+  leftLeg: string;
+} {
+  const variantTag =
+    parts.variant === 'slim' ? 'slim 3-pixel arms' : 'classic 4-pixel arms';
+
+  const head = appendOverlay(parts.head, parts.headOverlay);
+  const torso = appendOverlay(parts.torso, parts.torsoOverlay);
+
+  return {
+    head: `single isolated minecraft head, ${head}, ${variantTag}, plain background, no body, no limbs, centered, front-facing`,
+    torso: `single isolated minecraft torso, ${torso}, ${variantTag}, plain background, no head, no limbs, centered, front-facing`,
+    rightArm: `single isolated minecraft right arm, ${parts.rightArm}, ${variantTag}, plain background, no body, no head, no other limb, centered, vertical`,
+    leftArm: `single isolated minecraft left arm, ${parts.leftArm}, ${variantTag}, plain background, no body, no head, no other limb, centered, vertical`,
+    rightLeg: `single isolated minecraft right leg, ${parts.rightLeg}, plain background, no body, no head, no arms, no other leg, centered, vertical`,
+    leftLeg: `single isolated minecraft left leg, ${parts.leftLeg}, plain background, no body, no head, no arms, no other leg, centered, vertical`,
+  };
+}
+
+function appendOverlay(base: string, overlay: string | undefined): string {
+  if (overlay === undefined || overlay.trim().length === 0) return base;
+  return `${base}, with ${overlay.trim()}`;
+}
+
+/**
+ * Fetch a single part image from the Cloudflare Worker. Same
+ * transport contract as `callCloudflareWorker` (legacy single-call
+ * path) — duplicated rather than refactored because the per-region
+ * path needs the raw PNG buffer (no `generateSkinFromImage` call
+ * yet — that runs once on the composited atlas).
+ */
+async function fetchPartImage(
+  prompt: string,
+  signal: AbortSignal,
+): Promise<Buffer> {
+  const { url, token } = readEnvOrThrow();
+
+  let fetched = false;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'image/png',
+      },
+      body: JSON.stringify({ prompt }),
+      signal,
+    });
+    fetched = true;
+  } catch (err) {
+    if (signal.aborted) throw new CloudflareAbortedError(false);
+    if (isAbortLikeError(err)) throw new CloudflareAbortedError(false);
+    if (isTimeoutLikeError(err, signal)) throw new CloudflareTimeoutError();
+    throw new CloudflareUpstreamError(0, formatErr(err));
+  }
+
+  if (res.status === 401) {
+    void res.body?.cancel();
+    throw new CloudflareAuthError();
+  }
+  if (res.status === 429) {
+    void res.body?.cancel();
+    throw new CloudflareRateLimitError(parseRetryAfter(res.headers.get('retry-after')));
+  }
+  if (res.status < 200 || res.status >= 300) {
+    throw new CloudflareUpstreamError(res.status, await readBodyExcerpt(res));
+  }
+
+  try {
+    const ab = await res.arrayBuffer();
+    return Buffer.from(ab);
+  } catch (err) {
+    if (signal.aborted) throw new CloudflareAbortedError(true);
+    if (isAbortLikeError(err)) throw new CloudflareAbortedError(fetched);
+    throw new CloudflareUpstreamError(res.status, formatErr(err));
+  }
 }
 
 async function callCloudflareWorker(
