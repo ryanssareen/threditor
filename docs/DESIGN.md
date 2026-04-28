@@ -1,9 +1,9 @@
 # Skin Editor — Design Document
 
-**Version:** 0.3
-**Status:** Ready for implementation (Phase 1)
+**Version:** 0.4
+**Status:** Ready for implementation (Phase 1) + M17 Enhancement
 **License:** MIT
-**Last updated:** 2026-04-18
+**Last updated:** 2026-04-28
 
 ---
 
@@ -1247,7 +1247,7 @@ The compound-engineering principle applies: document which tasks can be parallel
 | Gemini | Web UI | Visual design, accessibility, multimodal features. Consulted at plan phase for visual polish. |
 | Perplexity | Web UI | Primary-source research, license verification, library scouting. Consulted at plan phase for external facts. |
 
-The Web-UI AIs (ChatGPT, Gemini, Perplexity) contribute to the `/ce:plan` inputs. Their outputs are summarized into the plan document, which is then fed to Claude Code for the work phase. Multi-agent review during `/ce:review` is performed by the CE plugin's 14 parallel subagents within Claude Code.
+The Web-UI AIs (ChatGPT, Gemini, and Perplexity) contribute to the `/ce:plan` inputs. Their outputs are summarized into the plan document, which is then fed to Claude Code for the work phase. Multi-agent review during `/ce:review` is performed by the CE plugin's 14 parallel subagents within Claude Code.
 
 ### 12.9 The compound effect
 
@@ -1332,6 +1332,289 @@ All prompts sent to ChatGPT, Gemini, and Perplexity, with their responses, are a
 | 0.1 | 2026-04-18 | Initial draft after round 2 AI consultation |
 | 0.2 | 2026-04-18 | Added Supabase BaaS spec |
 | 0.3 | 2026-04-18 | Switched BaaS to Firebase Spark; integrated round-3 outputs; added Compound Engineering implementation plan |
+| 0.4 | 2026-04-28 | Added M17 Enhancement: Two-Stage AI Pipeline Architecture |
+
+---
+
+## 15. M17 Enhancement — Two-Stage AI Pipeline Architecture
+
+**Status:** Post-deployment discovery, documented 2026-04-28  
+**Problem identified:** Single-stage AI generation (direct prompt → Cloudflare SDXL) produces generic images instead of properly formatted 64×64 Minecraft skin textures with correct UV mapping.
+
+### 15.1 Current architecture (BROKEN)
+
+```
+User Prompt ("knight in red armor crying")
+    ↓
+[Cloudflare SDXL Lightning]
+    ↓
+Generic PNG image ❌
+```
+
+**Failure mode:** The AI generates a regular image (photo/illustration style) rather than understanding the Minecraft skin UV layout. Resulting textures don't map to head/body/arms/legs regions correctly.
+
+### 15.2 New architecture — Two-stage pipeline
+
+```
+User Prompt
+    ↓
+[STAGE 1: GROQ (Llama 3.3 70B) — The Interpreter 🧠]
+├─ System instructions: "You are a Minecraft skin designer. Break down the user's description into specific part-by-part descriptions."
+├─ Input: "knight in red armor crying"
+└─ Output: Structured JSON
+    {
+      "head": "Pale skin tone, red short hair, crying eyes with blue tears streaming down cheeks, sad expression",
+      "headOverlay": "Silver knight helmet with red plume on top, partially covering the head",
+      "torso": "Red and silver knight chest armor with gold accents, white tunic visible at waist",
+      "torsoOverlay": "Red cloth cape attached to shoulders",
+      "rightArm": "Red armored sleeve with silver shoulder guard and gold trim",
+      "leftArm": "Red armored sleeve with silver shoulder guard and gold trim",
+      "rightLeg": "Dark blue cloth pants, red armor plates on thigh and shin, brown boots",
+      "leftLeg": "Dark blue cloth pants, red armor plates on thigh and shin, brown boots"
+    }
+    ↓
+[STAGE 2: CLOUDFLARE WORKERS (SDXL Lightning) — The Renderer 🎨]
+├─ For each body part:
+│   ├─ Generate 8×8 or 4×8 texture region based on part description
+│   ├─ Apply Minecraft pixel-art style constraints
+│   └─ Place in correct UV coordinates
+└─ Output: Valid 64×64 Minecraft skin texture ✅
+```
+
+### 15.3 Why this works
+
+**Separation of concerns:**
+- **Groq** = Fast (3-5sec), cheap ($0.59/1M tokens), excellent at reasoning and structured output
+- **Cloudflare** = Powerful image generation, but needs explicit instructions per region
+
+**Quality improvements:**
+- Each body part gets focused, detailed description
+- Groq understands creative intent ("crying knight") and translates to visual details
+- Cloudflare receives precise per-region prompts instead of vague overall prompt
+
+**Cost efficiency:**
+- Stage 1 (Groq): ~500 tokens = $0.0003 per generation
+- Stage 2 (Cloudflare): Same cost as current implementation
+- Total additional cost: negligible
+
+### 15.4 Implementation changes required
+
+#### File: `lib/ai/types.ts`
+
+```ts
+// NEW: Structured skin part descriptions from Groq
+export type SkinPartDescriptions = {
+  head: string;
+  headOverlay?: string;
+  torso: string;
+  torsoOverlay?: string;
+  rightArm: string;
+  leftArm: string;
+  rightLeg: string;
+  leftLeg: string;
+  variant: 'classic' | 'slim';  // Groq determines which variant fits better
+};
+
+// EXISTING: Final parsed skin data
+export type AISkinResponse = {
+  palette: RGBA[];
+  rows: Uint8Array[];
+};
+```
+
+#### File: `lib/ai/groq-interpreter.ts` (NEW)
+
+```ts
+import 'server-only';
+import Groq from 'groq-sdk';
+import type { SkinPartDescriptions } from './types';
+
+const SYSTEM_PROMPT = `You are a Minecraft skin designer AI. Your job is to break down user descriptions into detailed, part-by-part visual descriptions for a 64×64 Minecraft skin.
+
+CRITICAL RULES:
+1. Output ONLY valid JSON, no preamble, no markdown code fences
+2. Each body part gets a detailed visual description (skin tone, clothing, armor, accessories, facial features)
+3. Be specific about colors, textures, materials, and placement
+4. Determine if classic (4px arms) or slim (3px arms) variant fits better
+5. Overlay layers (headOverlay, torsoOverlay) are optional for additional details like helmets, capes, hoods
+
+OUTPUT FORMAT:
+{
+  "head": "detailed description of head (skin, hair, facial features)",
+  "headOverlay": "optional: helmet, hood, hat, or other head accessory",
+  "torso": "detailed description of torso (clothing, armor, skin)",
+  "torsoOverlay": "optional: cape, jacket, vest over the main torso",
+  "rightArm": "detailed description of right arm",
+  "leftArm": "detailed description of left arm", 
+  "rightLeg": "detailed description of right leg",
+  "leftLeg": "detailed description of left leg",
+  "variant": "classic" or "slim"
+}`;
+
+export async function interpretPromptToSkinParts(
+  userPrompt: string,
+  signal: AbortSignal
+): Promise<SkinPartDescriptions> {
+  const groq = new Groq({
+    apiKey: process.env.GROQ_API_KEY!,
+  });
+
+  const completion = await groq.chat.completions.create(
+    {
+      model: 'llama-3.3-70b-versatile',  // Fast, smart, great at structured output
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.7,  // Some creativity, but not too wild
+      max_tokens: 800,   // Enough for detailed descriptions
+      response_format: { type: 'json_object' },  // Force JSON output
+    },
+    { signal }
+  );
+
+  const content = completion.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error('Groq returned empty response');
+  }
+
+  const parsed = JSON.parse(content) as SkinPartDescriptions;
+  
+  // Validate required fields
+  const required = ['head', 'torso', 'rightArm', 'leftArm', 'rightLeg', 'leftLeg', 'variant'];
+  for (const field of required) {
+    if (!(field in parsed)) {
+      throw new Error(`Groq output missing required field: ${field}`);
+    }
+  }
+
+  return parsed;
+}
+```
+
+#### File: `lib/ai/cloudflare-client.ts` (MODIFIED)
+
+```ts
+// BEFORE: Single prompt for whole skin
+export async function generateSkinFromCloudflare(
+  prompt: string,
+  signal: AbortSignal
+): Promise<CloudflareCallResult>
+
+// AFTER: Part-by-part generation
+export async function generateSkinFromParts(
+  parts: SkinPartDescriptions,
+  signal: AbortSignal
+): Promise<CloudflareCallResult> {
+  const { url, token } = readEnvOrThrow();
+  
+  // Build structured prompt for Cloudflare Worker
+  // Each body part gets its own generation region with UV coordinates
+  const structuredPrompt = {
+    variant: parts.variant,
+    regions: [
+      { part: 'head', uvBounds: [8, 0, 16, 8], description: parts.head },
+      { part: 'headOverlay', uvBounds: [40, 0, 48, 8], description: parts.headOverlay },
+      { part: 'torso', uvBounds: [20, 20, 28, 32], description: parts.torso },
+      // ... rest of UV mappings
+    ],
+    style: 'minecraft pixel art, blocky, low-poly, 64x64 texture',
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(structuredPrompt),
+    signal,
+  });
+
+  // ... rest of implementation
+}
+```
+
+#### File: `app/api/ai/generate/route.ts` (MODIFIED)
+
+```ts
+// BEFORE: Direct Cloudflare call
+const result = await generateSkinFromCloudflare(prompt, signal);
+
+// AFTER: Two-stage pipeline
+// Stage 1: Interpret user prompt into part descriptions
+const parts = await interpretPromptToSkinParts(prompt, signal);
+
+// Stage 2: Generate skin from structured parts
+const result = await generateSkinFromParts(parts, signal);
+```
+
+### 15.5 Cloudflare Worker changes
+
+The Worker endpoint needs to understand the new structured input format and generate each region separately:
+
+```js
+// worker.js (pseudocode)
+export default {
+  async fetch(request, env) {
+    const { variant, regions, style } = await request.json();
+    
+    // Create 64×64 canvas
+    const skinTexture = new Uint8Array(64 * 64 * 4);
+    
+    // For each region
+    for (const region of regions) {
+      if (!region.description) continue;  // Skip if optional part is empty
+      
+      // Generate this specific part
+      const partPrompt = `${region.description}, ${style}`;
+      const partImage = await env.AI.run('@cf/stabilityai/stable-diffusion-xl-lightning', {
+        prompt: partPrompt,
+        num_steps: 4,  // Fast generation
+        width: (region.uvBounds[2] - region.uvBounds[0]) * 8,  // UV to pixel conversion
+        height: (region.uvBounds[3] - region.uvBounds[1]) * 8,
+      });
+      
+      // Place generated part at correct UV coordinates
+      blitImageToUV(skinTexture, partImage, region.uvBounds);
+    }
+    
+    return new Response(skinTexture, { headers: { 'Content-Type': 'application/octet-stream' } });
+  }
+};
+```
+
+### 15.6 Benefits
+
+**Quality:**
+- ✅ Generates actual Minecraft skins instead of generic images
+- ✅ Each body part receives focused attention
+- ✅ Creative intent preserved (crying knight, cyberpunk hacker, etc.)
+
+**Performance:**
+- ✅ Groq stage: 3-5 seconds
+- ✅ Cloudflare stage: 15-20 seconds (unchanged)
+- ✅ Total: 18-25 seconds (acceptable for high-quality generation)
+
+**Cost:**
+- ✅ Groq: $0.0003 per generation (negligible)
+- ✅ Cloudflare: Same as before
+- ✅ Dual-mode UI preserved (Fast mode uses Groq only for simple skins)
+
+### 15.7 Rollout plan
+
+This enhancement will be implemented by Claude Code following the Compound Engineering methodology:
+
+1. **Plan phase** (`/ce:plan`) — Detailed technical plan with edge cases
+2. **Work phase** (`/ce:work`) — Implementation with tests
+3. **Review phase** (`/ce:review`) — Multi-agent parallel review
+4. **Compound phase** (`/ce:compound`) — Capture learnings in `docs/COMPOUND.md`
+
+**Testing strategy:**
+- Unit tests for JSON parsing/validation from Groq
+- Integration tests for end-to-end pipeline
+- Visual regression tests comparing generated skins to expected UV layouts
+- Cost tracking to ensure budget stays under $0.01 per generation
 
 ---
 

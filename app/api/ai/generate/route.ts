@@ -72,9 +72,10 @@ import {
 } from '@/lib/ai/cloudflare-errors';
 import {
   CLOUDFLARE_MODEL_ID,
-  generateSkinFromCloudflare,
+  generateSkinFromParts,
   getCloudflareEnvShape,
 } from '@/lib/ai/cloudflare-client';
+import { interpretPromptToSkinParts } from '@/lib/ai/groq-interpreter';
 import { costEstimateUsd, HARD_TIMEOUT_MS, MODEL } from '@/lib/ai/prompt';
 import type { AISkinResponse } from '@/lib/ai/types';
 
@@ -205,17 +206,43 @@ async function callProvider(
   signal: AbortSignal,
 ): Promise<ProviderResult> {
   if (provider === 'cloudflare') {
-    const r = await generateSkinFromCloudflare(prompt, signal);
+    // M17 Two-stage pipeline:
+    //   Stage 1: Groq interprets the user prompt into structured
+    //            per-part `SkinPartDescriptions`.
+    //   Stage 2: Cloudflare worker renders a 64×64 skin from a rich
+    //            region-aware composed prompt.
+    //
+    // If Stage 1 fails with a non-fatal Groq error, the caller's
+    // catch cascade reports it the same way it does for the M16 path
+    // (rate-limit / timeout / etc are reused). We do NOT silently fall
+    // back to single-stage — quality is the whole point of M17.
+    console.log('[AI Generation] 🧠 Stage 1: Groq interpreting prompt → parts');
+    const stage1 = await interpretPromptToSkinParts(prompt, signal);
+    console.log('[AI Generation] ✅ Stage 1 complete:', {
+      variant: stage1.parts.variant,
+      hasHeadOverlay: stage1.parts.headOverlay !== undefined,
+      hasTorsoOverlay: stage1.parts.torsoOverlay !== undefined,
+      promptTokens: stage1.promptTokens,
+      completionTokens: stage1.completionTokens,
+    });
+
+    console.log('[AI Generation] 🎨 Stage 2: Cloudflare rendering parts → skin');
+    const r = await generateSkinFromParts(stage1.parts, signal);
+    console.log('[AI Generation] ✅ Stage 2 complete:', {
+      durationMs: r.durationMs,
+      paletteSize: r.parsed.palette.length,
+    });
+
     return {
       parsed: r.parsed,
       retryCount: 0,
       finishReason: 'stop',
-      // Tokens are not a Cloudflare concept — write null (not 0) so
-      // /aiGenerations queries can distinguish "no tokens because
-      // Cloudflare" from "0 tokens because Groq returned empty".
-      tokensIn: null,
-      tokensOut: null,
-      totalTokens: null,
+      // Stage-1 Groq tokens are real; Stage-2 Cloudflare has none.
+      // Surface the Stage-1 numbers so /aiGenerations cost rollups
+      // catch the (small) interpreter spend.
+      tokensIn: stage1.promptTokens,
+      tokensOut: stage1.completionTokens,
+      totalTokens: stage1.totalTokens,
       modelId: r.modelId,
     };
   }

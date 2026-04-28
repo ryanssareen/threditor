@@ -28,7 +28,8 @@ import {
   type CloudflareEnvShape,
 } from './cloudflare-errors';
 import { generateSkinFromImage } from './cloudflare';
-import type { AISkinResponse } from './types';
+import { composeRenderPrompt } from './groq-interpreter';
+import type { AISkinResponse, SkinPartDescriptions } from './types';
 
 /** Cloudflare model identifier as recorded on /aiGenerations.model. */
 export const CLOUDFLARE_MODEL_ID = 'cf/sdxl-lightning';
@@ -114,8 +115,36 @@ async function readBodyExcerpt(res: Response): Promise<string> {
 /**
  * Call the Cloudflare Worker, decode the PNG body, run the image
  * pipeline, return an `AISkinResponse`.
+ *
+ * Single-stage path: pass the user's raw prompt through unchanged.
+ * Used when the route is invoked without Stage-1 interpretation (e.g.,
+ * when Groq is unavailable or for the legacy `cloudflare`-only flow).
  */
 export async function generateSkinFromCloudflare(
+  prompt: string,
+  signal: AbortSignal,
+): Promise<CloudflareCallResult> {
+  return callCloudflareWorker(prompt, signal);
+}
+
+/**
+ * M17 Stage 2: render an `AISkinResponse` from structured per-part
+ * descriptions produced by Stage 1 (Groq interpreter).
+ *
+ * Composes a single rich SDXL prompt that anchors region words
+ * ("head", "torso", …) so SDXL aligns body-part details with the
+ * corresponding atlas regions. Calls the existing Cloudflare worker
+ * (which only accepts `{ prompt }`) — no worker redeploy required.
+ */
+export async function generateSkinFromParts(
+  parts: SkinPartDescriptions,
+  signal: AbortSignal,
+): Promise<CloudflareCallResult> {
+  const composed = composeRenderPrompt(parts);
+  return callCloudflareWorker(composed, signal);
+}
+
+async function callCloudflareWorker(
   prompt: string,
   signal: AbortSignal,
 ): Promise<CloudflareCallResult> {
@@ -150,7 +179,6 @@ export async function generateSkinFromCloudflare(
   }
 
   if (res.status === 401) {
-    // Drain so connections release.
     void res.body?.cancel();
     throw new CloudflareAuthError();
   }
@@ -170,7 +198,6 @@ export async function generateSkinFromCloudflare(
     bodyBuf = Buffer.from(ab);
   } catch (err) {
     if (signal.aborted) {
-      // `fetched=true` here — Cloudflare has already billed Neurons.
       throw new CloudflareAbortedError(true);
     }
     if (isAbortLikeError(err)) {
@@ -179,8 +206,6 @@ export async function generateSkinFromCloudflare(
     throw new CloudflareUpstreamError(res.status, formatErr(err));
   }
 
-  // generateSkinFromImage throws ImageProcessingError on failure;
-  // bubbles up to the route's catch cascade as a 422.
   const parsed = await generateSkinFromImage(bodyBuf);
   return {
     parsed,

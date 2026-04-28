@@ -29,6 +29,30 @@ export type AISkinResponse = {
 };
 
 /**
+ * M17 Stage 1 output. Produced by `lib/ai/groq-interpreter.ts`.
+ *
+ * Structured per-part description of a Minecraft skin, derived from
+ * the user's freeform prompt. Stage 2 (Cloudflare) composes a rich
+ * region-aware SDXL prompt from these parts.
+ *
+ * Overlay layers (`headOverlay`, `torsoOverlay`) are optional — they
+ * exist to capture helmets/capes/hoods/jackets that sit on top of the
+ * base layer. Empty string and missing key are both treated as "no
+ * overlay" by the renderer.
+ */
+export type SkinPartDescriptions = {
+  head: string;
+  headOverlay?: string;
+  torso: string;
+  torsoOverlay?: string;
+  rightArm: string;
+  leftArm: string;
+  rightLeg: string;
+  leftLeg: string;
+  variant: 'classic' | 'slim';
+};
+
+/**
  * Discrete reasons a payload can fail validation. The route maps these
  * into a single user-facing 422 response code (`generation_invalid`)
  * but logs the specific category in `/aiGenerations.validationFailureCategory`
