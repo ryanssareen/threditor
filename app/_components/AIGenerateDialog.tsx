@@ -233,12 +233,14 @@ export function AIGenerateDialog({ isOpen, onClose, onGenerate }: Props) {
                   data-testid="ai-mode-fast"
                   onClick={() => setMode('groq')}
                   disabled={state === 'loading'}
-                  className={`flex-1 rounded-sm border border-ui-border bg-ui-base px-3 py-2 font-mono text-sm text-text-primary hover:border-accent/60 disabled:opacity-50 ${
-                    mode === 'groq' ? 'border-accent' : ''
+                  className={`flex-1 rounded-sm border px-3 py-2 font-mono text-sm transition-all disabled:opacity-50 ${
+                    mode === 'groq' 
+                      ? 'border-accent bg-accent/10 text-accent shadow-[0_0_12px_rgba(0,229,255,0.3)]' 
+                      : 'border-ui-border bg-ui-base text-text-primary hover:border-accent/60'
                   }`}
                 >
                   ⚡ Fast
-                  <div className="mt-0.5 text-xs text-text-muted">3-5 sec</div>
+                  <div className={`mt-0.5 text-xs ${mode === 'groq' ? 'text-accent/70' : 'text-text-muted'}`}>3-5 sec</div>
                 </button>
                 <button
                   type="button"
@@ -246,12 +248,14 @@ export function AIGenerateDialog({ isOpen, onClose, onGenerate }: Props) {
                   data-testid="ai-mode-quality"
                   onClick={() => setMode('cloudflare')}
                   disabled={state === 'loading'}
-                  className={`flex-1 rounded-sm border border-ui-border bg-ui-base px-3 py-2 font-mono text-sm text-text-primary hover:border-accent/60 disabled:opacity-50 ${
-                    mode === 'cloudflare' ? 'border-accent' : ''
+                  className={`flex-1 rounded-sm border px-3 py-2 font-mono text-sm transition-all disabled:opacity-50 ${
+                    mode === 'cloudflare' 
+                      ? 'border-accent bg-accent/10 text-accent shadow-[0_0_12px_rgba(0,229,255,0.3)]' 
+                      : 'border-ui-border bg-ui-base text-text-primary hover:border-accent/60'
                   }`}
                 >
                   ✨ High Quality
-                  <div className="mt-0.5 text-xs text-text-muted">15-20 sec</div>
+                  <div className={`mt-0.5 text-xs ${mode === 'cloudflare' ? 'text-accent/70' : 'text-text-muted'}`}>15-20 sec</div>
                 </button>
               </div>
             </div>
