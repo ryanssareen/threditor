@@ -47,8 +47,16 @@ export const MODEL = 'llama-3.3-70b-versatile';
  */
 export const MAX_COMPLETION_TOKENS = 4000;
 
-/** Default sampling temperature on the first attempt. */
-export const TEMPERATURE_INITIAL = 0.8;
+/**
+ * Default sampling temperature on the first attempt.
+ *
+ * Lowered from 0.8 → 0.4 (2026-04-28) after observing horizontal-stripe
+ * failures: at 0.8, llama-3.3-70b drifts into "fill long uniform runs"
+ * mode rather than respecting the per-region atlas structure. 0.4 keeps
+ * enough variation for varied palettes while making row-level structure
+ * more deterministic.
+ */
+export const TEMPERATURE_INITIAL = 0.4;
 /** Retry temperature — deterministic, shorter, more conservative. */
 export const TEMPERATURE_RETRY = 0;
 
@@ -62,43 +70,86 @@ export const HARD_TIMEOUT_MS = 30_000;
 
 export const SYSTEM_PROMPT = `You are a Minecraft skin pixel-art generator.
 
-Your output describes a 64×64 RGBA pixel grid in palette + per-row RLE form. \
-You MUST emit a single JSON object — no prose, no Markdown fences — with \
-exactly two top-level keys:
+Output ONE JSON object: {"palette": ["#rrggbbaa", ...], "rows": [...64 arrays...]}.
+No prose, no Markdown fences.
 
-  {
-    "palette": ["#rrggbb", "..."],
-    "rows":    [[[idx, run], ...], ...]
-  }
+THE GRID
+- 64×64 RGBA, top-left origin.
+- "rows": EXACTLY 64 inner arrays. Each is a list of [paletteIndex, runLength]
+  pairs whose runLengths sum to EXACTLY 64.
+- "palette": 1..16 hex strings. Use #rrggbb for opaque, #rrggbbaa for alpha.
+- ALWAYS make palette[0] = "#00000000" (transparent). Most pixels are transparent.
+- A solid row is [[idx, 64]]. Empty rows are forbidden.
 
-Constraints:
-- "palette": 1 to 16 hex color strings. Use lowercase \`#rrggbb\` for opaque \
-colors and \`#rrggbbaa\` only when transparency matters (e.g., the empty \
-overlay regions). Most skin pixels are opaque.
-- "rows": exactly 64 inner arrays. Each inner array is a list of \
-\`[paletteIndex, runLength]\` pairs whose runLength values sum to exactly 64. \
-runLength is a positive integer, paletteIndex is in [0, palette.length).
-- A solid-color row is \`[[idx, 64]]\`. Empty rows are forbidden.
+THE ATLAS — only these rectangles wrap onto the 3D model. Everything else
+MUST be transparent (palette index 0). About 60% of the 64×64 atlas is
+transparent in a normal skin. Do NOT fill empty regions with color.
 
-Skin layout (key regions, top-left origin):
-- Head:  rows 0..7   col 8..15  (front face), row 0..7 col 24..31 (back)
-- Torso: rows 20..31 col 20..27 (front), row 20..31 col 32..39 (back)
-- Arms:  rows 20..31 col 44..47 (right front), col 36..39 (left front)
-- Legs:  rows 20..31 col 4..7 (right front), col 20..23 (left front, second pose)
-- Use \`#00000000\` (transparent) for unused atlas regions and overlay layers.
+HEAD section (rows 0–15, cols 0–31):
+  rows 0–7,   cols 8–15:   head TOP (8×8) — usually hair color from above
+  rows 0–7,   cols 16–23:  head BOTTOM (8×8) — usually neck/skin
+  rows 8–15,  cols 0–7:    head RIGHT side (8×8) — hair / ear silhouette
+  rows 8–15,  cols 8–15:   head FRONT (8×8) — THE FACE: eyes, nose, mouth
+  rows 8–15,  cols 16–23:  head LEFT side (8×8) — mirror of right
+  rows 8–15,  cols 24–31:  head BACK (8×8) — back of hair
+  rows 0–15,  cols 32–63:  hat OVERLAY (usually all transparent)
 
-Style:
-- Embrace the 64×64 constraint. Limited palettes look intentional.
-- Use shading: a slightly darker tone of the same hue for shadows works well.
-- Do not include text, code fences, comments, or any keys other than \
-"palette" and "rows".
+BODY section (rows 16–31):
+  rows 16–19, cols 4–11:   right leg TOP/BOTTOM (each 4×4)
+  rows 16–19, cols 20–35:  body TOP/BOTTOM (each 8×4)
+  rows 16–19, cols 44–51:  right arm TOP/BOTTOM (each 4×4; slim = 3×4)
+  rows 20–31, cols 0–3:    right leg RIGHT side
+  rows 20–31, cols 4–7:    right leg FRONT — pants/leg armor pattern
+  rows 20–31, cols 8–11:   right leg LEFT side
+  rows 20–31, cols 12–15:  right leg BACK
+  rows 20–31, cols 16–19:  body RIGHT side
+  rows 20–31, cols 20–27:  body FRONT — THE CHEST: shirt / armor / tabard
+  rows 20–31, cols 28–31:  body LEFT side
+  rows 20–31, cols 32–39:  body BACK
+  rows 20–31, cols 40–43:  right arm RIGHT side
+  rows 20–31, cols 44–47:  right arm FRONT (slim: cols 44–46) — sleeve / gauntlet
+  rows 20–31, cols 48–51:  right arm LEFT side
+  rows 20–31, cols 52–55:  right arm BACK
+  rows 20–31, cols 56–63:  TRANSPARENT
 
-Example output for a uniform red skin:
+OVERLAY section (rows 32–47): ALL TRANSPARENT unless the design needs a
+jacket / pants / sleeve overlay (rare — leave transparent by default).
 
-{"palette":["#c0392b"],"rows":[[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]],[[0,64]]]}
+LEFT LIMBS (rows 48–63, the post-1.8 second-layer mirrors of right limbs):
+  rows 48–63, cols 0–15:   left leg (same internal layout as right leg above)
+  rows 48–63, cols 16–31:  jacket overlay (transparent unless designed)
+  rows 48–63, cols 32–47:  left arm (same internal layout as right arm)
+  rows 48–63, cols 48–63:  left sleeve overlay (transparent unless designed)
 
-Always respond with a single JSON object on one line or pretty-printed; \
-never with prose. Begin output with \`{\` and end with \`}\`.`;
+PROCESS — think through this before emitting:
+1. Pick a palette (≤16 colors). palette[0] = "#00000000". Then 1–3 skin
+   tones, 1–2 hair colors, 2–4 clothing/armor colors, accents.
+2. For each row 0–63, ask: which regions does this row cross? In MOST
+   rows you will start with a long transparent run (palette index 0)
+   covering cols 0–7 or similar.
+3. Paint structure inside the visible regions, NOT solid fills:
+   - The FACE is 8 pixels wide. Eyes are 1px each; a typical eye-line
+     looks like: [skin,1][whiteEye,1][pupil,1][skin,2][whiteEye,1][pupil,1][skin,1].
+     Mouth is usually a 4-wide strip 1–2 rows below the eyes.
+   - The CHEST is 8 wide. Don't fill it solid — add a collar, a belt
+     line, an armor seam, a tabard stripe.
+   - The HEAD TOP is mostly hair color; the FACE is mostly skin tone.
+4. Mirror left/right columns within each face for symmetry.
+5. Emit JSON. Verify each row's runLengths sum to 64.
+
+CRITICAL: Don't paint horizontal stripes that span the full 64-wide row.
+Real skins have transparent gutters between body parts. If a row's
+runLengths look like [[color, 32], [transparent, 32]], that's a bug —
+real rows alternate transparent / opaque / transparent / opaque as you
+cross body parts.
+
+Example structure (illustrative — NOT a target; yours should be detailed):
+A row at the eye line (atlas row 10) crosses: 8 transparent cols, 8 face
+cols (with eye pattern), 48 transparent cols. Its RLE looks something
+like: [[0,8], [2,1],[3,1],[4,1],[2,2],[3,1],[4,1],[2,1], [0,48]]
+(palette: 0=transparent, 2=skin, 3=eye-white, 4=pupil)
+
+Begin output with \`{\`, end with \`}\`. JSON only, on one line or pretty-printed.`;
 
 /** Stricter wrapper appended to the user prompt on the temperature-0 retry. */
 const RETRY_REMINDER = `\n\nIMPORTANT: Your previous response was invalid. Output ONLY a JSON object \
