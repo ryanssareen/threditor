@@ -54,12 +54,17 @@ export default function LandingHero() {
             keep editing by hand.
           </p>
           <div className="hero__ctas">
-            <Link href="/editor" className="btn btn-primary btn-lg">
+            <Link
+              href="/editor"
+              prefetch={false}
+              className="btn btn-primary btn-lg"
+              data-testid="hero-cta"
+            >
               Open the editor →
             </Link>
-            <a href="#features" className="btn btn-ghost btn-lg">
+            <Link href="/features" className="btn btn-ghost btn-lg">
               See features
-            </a>
+            </Link>
           </div>
           <p className="hero__meta">
             MIT licensed · No account required to paint · &lt; 4 s p50
