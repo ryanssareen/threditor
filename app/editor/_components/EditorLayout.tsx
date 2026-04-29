@@ -30,7 +30,9 @@ import { ExportDialog } from './ExportDialog';
 import { LuminanceToggle } from './LuminanceToggle';
 import type { LayerLifecycleCommand } from './LayerPanel';
 import { Sidebar } from './Sidebar';
+import { StatusBar } from './StatusBar';
 import { TemplateGate } from './TemplateGate';
+import { Toolbar } from './Toolbar';
 import { useTemplateGate } from './useTemplateGate';
 import { ViewportUV } from './ViewportUV';
 import dynamic from 'next/dynamic';
@@ -840,117 +842,139 @@ export function EditorLayout() {
     setClarification(null);
   }, [clarification, fetchAndApplySkin]);
 
-  // M10: h-dvh - 3.5rem leaves 56px (h-14) at the top for the fixed
-  // EditorHeader, so the 2D + 3D + sidebar flex layout fits in the
-  // remaining viewport.
+  const savingState = useEditorStore((s) => s.savingState);
+  const handleNewSkin = useCallback(() => {
+    undoStackRef.current?.clear();
+    useEditorStore.getState().resetDocument();
+  }, []);
+
   return (
     <>
-      <EditorHeader onPublishClick={() => setPublishOpen(true)} />
+      <EditorHeader
+        onPublishClick={() => setPublishOpen(true)}
+        variant={variant}
+        onVariantChange={handleUserVariantChange}
+        canUndo={undoStack.canUndo()}
+        canRedo={undoStack.canRedo()}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        onOpenTemplates={() => gate.dispatch({ type: 'SHEET_OPENED_FROM_MENU' })}
+        onNewSkin={handleNewSkin}
+        savingState={savingState}
+      />
       <div
-        className="flex h-[calc(100dvh-3.5rem)] w-dvw flex-col sm:flex-row"
+        className="flex h-[calc(100dvh-3.5rem)] w-dvw flex-col bg-ui-base sm:flex-row"
         data-first-paint={firstPaintActive ? 'true' : undefined}
       >
-      <div className="relative h-[30vh] w-full shrink-0 sm:h-full sm:w-auto sm:flex-1">
-        <EditorCanvas
-          texture={bundle?.textureManager.getTexture() ?? null}
-          variant={variant}
-          textureManager={bundle?.textureManager}
-          layer={activeLayer ?? undefined}
-          markDirty={() => markDirtyRef.current()}
-          hydrationPending={hydrationPending}
-          onStrokeCommit={handleStrokeCommit}
-          onStrokeActive={handleStrokeActive}
-          texFadeKey={texFadeKey}
-          yRotationPulseKey={yRotationPulseKey}
-        />
-        {/* M8 Unit 6: luminance mode pill */}
-        <LuminanceToggle />
-        {/* M7 Unit 7: contextual hint bubble */}
-        <ContextualHintOverlay />
-        {/* M7 Unit 7: headless affordance pulse coordinator */}
-        <AffordancePulse />
-        {/* M7: overlay gate — absolutely positioned within the 3D pane */}
-        <TemplateGate
-          state={gate.state}
-          dispatch={gate.dispatch}
-          onApplyTemplate={handleApplyTemplate}
-          hydrationPending={hydrationPending}
-        />
-      </div>
+        {/* Left tool rail — desktop only; on mobile, tools live above the stage. */}
+        <Toolbar variant="rail" className="hidden sm:flex" />
 
-      <div className="relative h-[40vh] w-full shrink-0 sm:h-full sm:w-auto sm:flex-1">
-        {bundle !== null && activeLayer !== null ? (
-          <ViewportUV
-            textureManager={bundle.textureManager}
-            layer={activeLayer}
-            markDirty={() => markDirtyRef.current()}
-            hydrationPending={hydrationPending}
-            onStrokeCommit={handleStrokeCommit}
-            onStrokeActive={handleStrokeActive}
+        {/* Main column: stage on top, status bar at the bottom. */}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col bg-canvas sm:flex-row">
+            <div className="relative h-[30vh] w-full shrink-0 sm:h-full sm:w-auto sm:flex-1">
+              <PaneLabel>3D · drag to orbit</PaneLabel>
+              <PaneMeta>{variant === 'classic' ? 'Classic' : 'Slim'} · 60fps</PaneMeta>
+              <EditorCanvas
+                texture={bundle?.textureManager.getTexture() ?? null}
+                variant={variant}
+                textureManager={bundle?.textureManager}
+                layer={activeLayer ?? undefined}
+                markDirty={() => markDirtyRef.current()}
+                hydrationPending={hydrationPending}
+                onStrokeCommit={handleStrokeCommit}
+                onStrokeActive={handleStrokeActive}
+                texFadeKey={texFadeKey}
+                yRotationPulseKey={yRotationPulseKey}
+              />
+              <LuminanceToggle />
+              <ContextualHintOverlay />
+              <AffordancePulse />
+              <TemplateGate
+                state={gate.state}
+                dispatch={gate.dispatch}
+                onApplyTemplate={handleApplyTemplate}
+                hydrationPending={hydrationPending}
+              />
+            </div>
+
+            <div className="relative h-[40vh] w-full shrink-0 border-ui-surface sm:h-full sm:w-auto sm:flex-1 sm:border-l">
+              <PaneLabel>UV · 64 × 64</PaneLabel>
+              {bundle !== null && activeLayer !== null ? (
+                <ViewportUV
+                  textureManager={bundle.textureManager}
+                  layer={activeLayer}
+                  markDirty={() => markDirtyRef.current()}
+                  hydrationPending={hydrationPending}
+                  onStrokeCommit={handleStrokeCommit}
+                  onStrokeActive={handleStrokeActive}
+                  className="h-full w-full"
+                />
+              ) : null}
+            </div>
+          </div>
+
+          <StatusBar />
+        </div>
+
+        {/* Right sidebar (280px). */}
+        <aside
+          className="h-[30vh] w-full shrink-0 border-t border-ui-border bg-ui-base sm:h-full sm:w-[280px] sm:border-l sm:border-t-0"
+          style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}
+        >
+          <Sidebar
             className="h-full w-full"
+            onLayerUndoPush={handleLayerUndoPush}
+            onOpenExport={() => setExportOpen(true)}
+            onOpenAi={() => setAiOpen(true)}
           />
-        ) : null}
+        </aside>
+
+        <ExportDialog
+          open={exportOpen}
+          onClose={() => setExportOpen(false)}
+          getLayers={() => layersRef.current}
+        />
+
+        <PublishDialog
+          isOpen={publishOpen}
+          onClose={() => setPublishOpen(false)}
+          onPublish={handlePublish}
+          onCreateNew={handleCreateNew}
+        />
+
+        <AIGenerateDialog
+          isOpen={aiOpen}
+          onClose={() => setAiOpen(false)}
+          onGenerate={handleAiGenerate}
+        />
+
+        {clarification !== null && (
+          <AIClarificationDialog
+            isOpen={true}
+            questions={clarification.questions}
+            onSubmit={handleClarificationSubmit}
+            onSkip={handleClarificationSkip}
+            onClose={() => setClarification(null)}
+          />
+        )}
       </div>
-
-      <aside
-        className="h-[30vh] w-full shrink-0 border-t border-ui-border bg-ui-surface sm:h-full sm:w-[280px] sm:border-l sm:border-t-0"
-        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}
-      >
-        <Sidebar
-          className="h-full w-full"
-          onLayerUndoPush={handleLayerUndoPush}
-          onUserVariantChange={handleUserVariantChange}
-          onOpenTemplateMenu={() =>
-            gate.dispatch({ type: 'SHEET_OPENED_FROM_MENU' })
-          }
-          canUndo={undoStack.canUndo()}
-          canRedo={undoStack.canRedo()}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          onOpenExport={() => setExportOpen(true)}
-          onOpenAi={() => setAiOpen(true)}
-          onOpenNewSkin={() => {
-            // Clear undo stack first, then reset document
-            undoStackRef.current?.clear();
-            useEditorStore.getState().resetDocument();
-          }}
-        />
-      </aside>
-
-      {/* M8 Unit 2: export dialog */}
-      <ExportDialog
-        open={exportOpen}
-        onClose={() => setExportOpen(false)}
-        getLayers={() => layersRef.current}
-      />
-
-      {/* M11 Unit 6: publish dialog — lazy-loaded. */}
-      <PublishDialog
-        isOpen={publishOpen}
-        onClose={() => setPublishOpen(false)}
-        onPublish={handlePublish}
-        onCreateNew={handleCreateNew}
-      />
-
-      {/* M16 Unit 6: AI generation dialog — lazy-loaded. */}
-      <AIGenerateDialog
-        isOpen={aiOpen}
-        onClose={() => setAiOpen(false)}
-        onGenerate={handleAiGenerate}
-      />
-
-      {/* M17 Stage 1: clarification dialog — only mounted while we
-          have pending questions from the route. */}
-      {clarification !== null && (
-        <AIClarificationDialog
-          isOpen={true}
-          questions={clarification.questions}
-          onSubmit={handleClarificationSubmit}
-          onSkip={handleClarificationSkip}
-          onClose={() => setClarification(null)}
-        />
-      )}
-    </div>
     </>
+  );
+}
+
+function PaneLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="pointer-events-none absolute left-3 top-3 z-[2] inline-flex items-center gap-1.5 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted">
+      {children}
+    </span>
+  );
+}
+
+function PaneMeta({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="pointer-events-none absolute right-3 top-3 z-[2] whitespace-nowrap font-mono text-[10px] tracking-[0.05em] text-text-muted">
+      {children}
+    </span>
   );
 }
