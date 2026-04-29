@@ -18,8 +18,6 @@ const TOOLS: readonly ToolDef[] = [
   { id: 'bucket', label: 'Bucket', key: 'G' },
 ];
 
-// Map lowercased shortcut key → tool id. Mirror (M) is handled separately
-// because it's a modifier toggle, not a tool swap.
 const TOOL_KEY_MAP: Record<string, ToolId> = {
   b: 'pencil',
   e: 'eraser',
@@ -27,7 +25,15 @@ const TOOL_KEY_MAP: Record<string, ToolId> = {
   g: 'bucket',
 };
 
-export function Toolbar({ className }: { className?: string }) {
+type Variant = 'rail' | 'stack';
+
+export function Toolbar({
+  className,
+  variant = 'stack',
+}: {
+  className?: string;
+  variant?: Variant;
+}) {
   const activeTool = useEditorStore((s) => s.activeTool);
   const setActiveTool = useEditorStore((s) => s.setActiveTool);
   const mirrorEnabled = useEditorStore((s) => s.mirrorEnabled);
@@ -35,9 +41,6 @@ export function Toolbar({ className }: { className?: string }) {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // M3 P2 #2: guard against Cmd/Ctrl/Alt combos so Cmd+B doesn't
-      // swap tools + open the browser bookmark dialog at the same time.
-      // Shift is allowed; capitalized keys still fire the same handler.
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       const target = e.target as HTMLElement | null;
@@ -45,8 +48,6 @@ export function Toolbar({ className }: { className?: string }) {
         const tag = target.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA') return;
         if (target.isContentEditable) return;
-        // ColorPicker SL square owns its own arrow-key handler via
-        // role="application"; shortcuts shouldn't hijack focus from it.
         if (target.getAttribute('role') === 'application') return;
       }
 
@@ -62,6 +63,43 @@ export function Toolbar({ className }: { className?: string }) {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTool, toggleMirror]);
+
+  if (variant === 'rail') {
+    return (
+      <nav
+        aria-label="Tools"
+        className={`flex w-16 flex-col items-center gap-1 border-r border-ui-border bg-ui-base py-3 ${className ?? ''}`}
+      >
+        {TOOLS.map(({ id, label, key }) => {
+          const isActive = activeTool === id;
+          return (
+            <RailButton
+              key={id}
+              data-testid={`tool-${id}`}
+              isActive={isActive}
+              onClick={() => setActiveTool(id)}
+              title={`${label} (${key})`}
+              label={label}
+              hotkey={key}
+            />
+          );
+        })}
+
+        <div className="my-1 h-px w-8 bg-ui-surface" />
+
+        <RailButton
+          data-testid="tool-mirror"
+          data-mirror-enabled={mirrorEnabled}
+          data-pulse-target="mirror"
+          isActive={mirrorEnabled}
+          onClick={toggleMirror}
+          title={`Mirror ${mirrorEnabled ? 'on' : 'off'} (M)`}
+          label="Mirror"
+          hotkey="M"
+        />
+      </nav>
+    );
+  }
 
   return (
     <div className={className}>
@@ -108,5 +146,50 @@ export function Toolbar({ className }: { className?: string }) {
         </button>
       </div>
     </div>
+  );
+}
+
+type RailButtonProps = {
+  isActive: boolean;
+  onClick: () => void;
+  title: string;
+  label: string;
+  hotkey: string;
+} & Record<`data-${string}`, string | boolean | undefined>;
+
+function RailButton({
+  isActive,
+  onClick,
+  title,
+  label,
+  hotkey,
+  ...rest
+}: RailButtonProps) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-pressed={isActive}
+      onClick={onClick}
+      className={[
+        'grid h-12 w-12 place-items-center rounded-sm border bg-ui-surface transition-colors',
+        isActive
+          ? 'border-accent'
+          : 'border-ui-border hover:border-accent',
+      ].join(' ')}
+      {...rest}
+    >
+      <span
+        className={[
+          'flex flex-col items-center gap-1 leading-none transition-colors',
+          isActive ? 'text-accent' : 'text-text-primary group-hover:text-accent',
+        ].join(' ')}
+      >
+        <span className="font-mono text-[11px] leading-none">{label}</span>
+        <span className="font-mono text-[9px] leading-none tracking-[0.05em] text-text-muted">
+          {hotkey}
+        </span>
+      </span>
+    </button>
   );
 }
