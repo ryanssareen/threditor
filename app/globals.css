@@ -866,6 +866,14 @@ textarea.contact__control {
   background-color: var(--color-success, #22c55e);
 }
 
+.toast[data-kind="error"] {
+  border-color: #ef4444;
+}
+
+.toast[data-kind="error"] .toast__dot {
+  background-color: #ef4444;
+}
+
 /* ── Footer ──────────────────────────────────────────────────────*/
 
 .landing-footer {
