@@ -36,7 +36,8 @@ export default function LandingContact() {
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
   const [errors, setErrors] = useState<Errors>({});
-  const [toast, setToast] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const toastTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -57,23 +58,54 @@ export default function LandingContact() {
     return next;
   }
 
-  function showToast(text: string) {
-    setToast(text);
+  function showToast(kind: 'success' | 'error', text: string) {
+    setToast({ kind, text });
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 3500);
+    toastTimer.current = window.setTimeout(() => setToast(null), 4000);
   }
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting) return;
     const next = validate();
     setErrors(next);
     if (Object.keys(next).length > 0) return;
-    const topicLabel = TOPICS.find((t) => t.value === topic)?.label.toLowerCase() ?? topic;
-    showToast(`Sent. We'll reply about your ${topicLabel} within 48h.`);
-    setName('');
-    setEmail('');
-    setMessage('');
-    setTopic('bug');
+
+    setSubmitting(true);
+    try {
+      const res = await fetch('/api/contact', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          topic,
+          message: message.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        const code = data.error ?? `http_${res.status}`;
+        showToast(
+          'error',
+          code === 'service_misconfigured'
+            ? "Email isn't set up yet — try again later."
+            : "Couldn't send. Try again or email us directly.",
+        );
+        return;
+      }
+      const topicLabel =
+        TOPICS.find((t) => t.value === topic)?.label.toLowerCase() ?? topic;
+      showToast('success', `Sent. We'll reply about your ${topicLabel} within 48h.`);
+      setName('');
+      setEmail('');
+      setMessage('');
+      setTopic('bug');
+    } catch {
+      showToast('error', "Couldn't send. Check your connection and try again.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const counterOver = message.length >= MESSAGE_MAX;
@@ -211,17 +243,27 @@ export default function LandingContact() {
               >
                 {message.length} / {MESSAGE_MAX}
               </span>
-              <button type="submit" className="btn btn-primary btn-lg">
-                Send message →
+              <button
+                type="submit"
+                className="btn btn-primary btn-lg"
+                disabled={submitting}
+                aria-busy={submitting}
+              >
+                {submitting ? 'Sending…' : 'Send message →'}
               </button>
             </div>
           </form>
         </div>
       </div>
       {toast !== null && (
-        <div className="toast" role="status" aria-live="polite">
+        <div
+          className="toast"
+          data-kind={toast.kind}
+          role="status"
+          aria-live="polite"
+        >
           <span className="toast__dot" />
-          <span>{toast}</span>
+          <span>{toast.text}</span>
         </div>
       )}
     </section>
