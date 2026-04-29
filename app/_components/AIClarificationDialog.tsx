@@ -1,20 +1,20 @@
 'use client';
 
 /**
- * M17 Stage 1 UI: clarifying-questions dialog.
+ * M17 Stage 1 UI: clarifying-questions dialog (step-by-step wizard).
  *
  * Spawned by EditorLayout when /api/ai/generate returns
- * `{ status: 'needs_clarification', questions }`. The dialog
- * collects answers via single-select / multi-select pill rows and
- * calls `onSubmit(answers)` with a `UserAnswers` map. The handler
- * fires the second /api/ai/generate request with `userAnswers` +
- * `skipClarification: true` to skip Stage-1 the second time around.
+ * `{ status: 'needs_clarification', questions }`. The dialog walks
+ * the user through one question at a time. Each step renders up to
+ * 4 button options, a free-text input (saved as a string answer),
+ * a per-question skip, and back/next navigation. A small "skip all"
+ * link at the bottom calls `onSkip` to bypass the entire flow.
  *
  * Mirrors the AIGenerateDialog discipline: hand-rolled ARIA dialog,
- * focus trap, Escape + backdrop close, idle/loading state.
+ * focus trap, Escape + backdrop close, idle/loading/error state.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ClarificationQuestion, UserAnswers } from '@/lib/ai/types';
 
 const FOCUSABLE =
@@ -24,19 +24,16 @@ function getFocusable(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
 }
 
+const CUSTOM_SENTINEL = '__custom__';
+
 type DialogState = 'idle' | 'loading' | 'error';
 
 type Props = {
   isOpen: boolean;
   questions: ClarificationQuestion[];
-  /**
-   * User submitted answers for every required (single_select)
-   * question. Multi-select questions may be empty arrays.
-   * Resolves on success; rejects with an Error whose `message` the
-   * dialog displays.
-   */
+  /** Submit collected answers. Any question the user skipped is omitted. */
   onSubmit: (answers: UserAnswers) => Promise<void>;
-  /** User skipped questions — generate with the original prompt only. */
+  /** Skip ALL questions — generate with the original prompt only. */
   onSkip: () => Promise<void>;
   onClose: () => void;
 };
@@ -48,7 +45,9 @@ export function AIClarificationDialog({
   onSkip,
   onClose,
 }: Props) {
+  const [currentStep, setCurrentStep] = useState(0);
   const [answers, setAnswers] = useState<UserAnswers>({});
+  const [customInput, setCustomInput] = useState('');
   const [state, setState] = useState<DialogState>('idle');
   const [error, setError] = useState('');
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -56,7 +55,9 @@ export function AIClarificationDialog({
 
   useEffect(() => {
     if (!isOpen) return;
+    setCurrentStep(0);
     setAnswers({});
+    setCustomInput('');
     setState('idle');
     setError('');
     returnFocusRef.current = (document.activeElement as HTMLElement | null) ?? null;
@@ -67,7 +68,7 @@ export function AIClarificationDialog({
     const el = dialogRef.current;
     if (el === null) return;
     getFocusable(el)[0]?.focus();
-  }, [isOpen]);
+  }, [isOpen, currentStep]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -110,52 +111,52 @@ export function AIClarificationDialog({
     returnFocusRef.current?.focus?.();
   }, [isOpen]);
 
-  // Single-select answers are required to enable Generate. Multi-select
-  // is optional — leaving none picked is allowed, the answer is just
-  // omitted from the payload.
-  const allRequiredAnswered = useMemo(() => {
-    for (const q of questions) {
-      if (q.type !== 'single_select') continue;
-      const v = answers[q.id];
-      if (typeof v !== 'string' || v.length === 0) return false;
-    }
-    return true;
-  }, [questions, answers]);
+  if (!isOpen || questions.length === 0) return null;
 
-  if (!isOpen) return null;
+  const currentQuestion = questions[currentStep];
+  const isLastQuestion = currentStep === questions.length - 1;
+  const currentAnswer = answers[currentQuestion.id];
+  const customSelected = currentAnswer === CUSTOM_SENTINEL;
+  const trimmedCustom = customInput.trim();
+  const canAdvance =
+    (typeof currentAnswer === 'string' &&
+      currentAnswer.length > 0 &&
+      !customSelected) ||
+    trimmedCustom.length > 0;
 
   const handleBackdropClick = () => {
     if (state === 'loading') return;
     onClose();
   };
 
-  const handleSelect = (q: ClarificationQuestion, option: string) => {
+  const handleOptionSelect = (option: string) => {
     if (state === 'loading') return;
-    setAnswers((prev) => {
-      if (q.type === 'single_select') {
-        return { ...prev, [q.id]: option };
-      }
-      const current = Array.isArray(prev[q.id]) ? (prev[q.id] as string[]) : [];
-      const next = current.includes(option)
-        ? current.filter((o) => o !== option)
-        : [...current, option];
-      const out = { ...prev };
-      if (next.length === 0) {
-        delete out[q.id];
-      } else {
-        out[q.id] = next;
-      }
-      return out;
-    });
+    setAnswers((prev) => ({ ...prev, [currentQuestion.id]: option }));
+    setCustomInput('');
   };
 
-  const handleSubmit = async () => {
-    if (state === 'loading' || !allRequiredAnswered) return;
+  const handleCustomFocus = () => {
+    if (state === 'loading') return;
+    setAnswers((prev) => ({ ...prev, [currentQuestion.id]: CUSTOM_SENTINEL }));
+  };
+
+  const finalizeAnswersForStep = (base: UserAnswers): UserAnswers => {
+    if (trimmedCustom.length > 0) {
+      return { ...base, [currentQuestion.id]: trimmedCustom };
+    }
+    if (base[currentQuestion.id] === CUSTOM_SENTINEL) {
+      const out = { ...base };
+      delete out[currentQuestion.id];
+      return out;
+    }
+    return base;
+  };
+
+  const submit = async (finalAnswers: UserAnswers) => {
     setState('loading');
     setError('');
     try {
-      await onSubmit(answers);
-      // Parent closes the dialog on success.
+      await onSubmit(finalAnswers);
     } catch (err) {
       const msg =
         err instanceof Error && err.message.length > 0
@@ -166,7 +167,41 @@ export function AIClarificationDialog({
     }
   };
 
-  const handleSkip = async () => {
+  const handleNext = () => {
+    if (state === 'loading' || !canAdvance) return;
+    const next = finalizeAnswersForStep(answers);
+    setAnswers(next);
+
+    if (isLastQuestion) {
+      submit(next);
+      return;
+    }
+    setCurrentStep((s) => s + 1);
+    setCustomInput('');
+  };
+
+  const handleSkipQuestion = () => {
+    if (state === 'loading') return;
+    const next = { ...answers };
+    delete next[currentQuestion.id];
+    setAnswers(next);
+    setCustomInput('');
+
+    if (isLastQuestion) {
+      submit(next);
+      return;
+    }
+    setCurrentStep((s) => s + 1);
+  };
+
+  const handleBack = () => {
+    if (state === 'loading' || currentStep === 0) return;
+    setCurrentStep((s) => s - 1);
+    setCustomInput('');
+    setError('');
+  };
+
+  const handleSkipAll = async () => {
     if (state === 'loading') return;
     setState('loading');
     setError('');
@@ -223,9 +258,36 @@ export function AIClarificationDialog({
         </div>
 
         <div className="px-5 py-4">
-          <p className="mb-4 text-sm text-text-secondary">
-            A few quick questions to make your skin sharper.
-          </p>
+          <div className="mb-3">
+            <p
+              data-testid="ai-clarify-step-label"
+              className="font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted"
+            >
+              Question {currentStep + 1} of {questions.length}
+            </p>
+            <p className="mt-2 text-base text-text-primary">
+              {currentQuestion.question}
+            </p>
+          </div>
+
+          <div
+            data-testid="ai-clarify-progress"
+            className="mb-5 flex gap-1.5"
+            aria-hidden="true"
+          >
+            {questions.map((q, idx) => (
+              <div
+                key={q.id}
+                className={`h-1.5 flex-1 rounded-full transition-colors ${
+                  idx < currentStep
+                    ? 'bg-accent'
+                    : idx === currentStep
+                    ? 'bg-accent/70'
+                    : 'bg-ui-border'
+                }`}
+              />
+            ))}
+          </div>
 
           {error !== '' && (
             <div
@@ -237,71 +299,107 @@ export function AIClarificationDialog({
             </div>
           )}
 
-          <div className="space-y-5">
-            {questions.map((q) => (
-              <fieldset key={q.id} className="space-y-2">
-                <legend className="font-mono text-xs uppercase tracking-wider text-text-muted">
-                  {q.question}
-                  {q.type === 'multi_select' && (
-                    <span className="ml-2 text-text-muted/70 normal-case tracking-normal">
-                      (multi-select, optional)
-                    </span>
-                  )}
-                </legend>
-                <div
-                  role={q.type === 'single_select' ? 'radiogroup' : 'group'}
-                  className="flex flex-wrap gap-2"
+          <div
+            role="radiogroup"
+            aria-label={currentQuestion.question}
+            className="mb-3 space-y-2"
+          >
+            {currentQuestion.options.slice(0, 4).map((option) => {
+              const selected = currentAnswer === option;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  data-testid={`ai-clarify-opt-${currentQuestion.id}-${option}`}
+                  disabled={state === 'loading'}
+                  onClick={() => handleOptionSelect(option)}
+                  className={`w-full rounded-sm border px-4 py-2.5 text-left font-mono text-xs transition-colors disabled:opacity-50 ${
+                    selected
+                      ? 'border-accent bg-accent/15 text-accent'
+                      : 'border-ui-border bg-ui-base text-text-secondary hover:border-accent/60 hover:text-text-primary'
+                  }`}
                 >
-                  {q.options.map((option) => {
-                    const selected =
-                      q.type === 'single_select'
-                        ? answers[q.id] === option
-                        : Array.isArray(answers[q.id]) &&
-                          (answers[q.id] as string[]).includes(option);
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        role={q.type === 'single_select' ? 'radio' : 'checkbox'}
-                        aria-checked={selected}
-                        data-testid={`ai-clarify-opt-${q.id}-${option}`}
-                        disabled={state === 'loading'}
-                        onClick={() => handleSelect(q, option)}
-                        className={`rounded-sm border px-3 py-2 font-mono text-xs transition-colors disabled:opacity-50 ${
-                          selected
-                            ? 'border-accent bg-accent/15 text-accent'
-                            : 'border-ui-border bg-ui-base text-text-secondary hover:border-accent/60 hover:text-text-primary'
-                        }`}
-                      >
-                        {option}
-                      </button>
-                    );
-                  })}
-                </div>
-              </fieldset>
-            ))}
+                  {option}
+                </button>
+              );
+            })}
           </div>
 
-          <div className="mt-6 flex gap-2">
+          <div className="mb-5">
+            <label
+              htmlFor="ai-clarify-custom"
+              className={`mb-1 block font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+                customSelected || trimmedCustom.length > 0
+                  ? 'text-accent'
+                  : 'text-text-muted'
+              }`}
+            >
+              Or type your own
+            </label>
+            <input
+              id="ai-clarify-custom"
+              type="text"
+              value={customInput}
+              onChange={(e) => setCustomInput(e.target.value)}
+              onFocus={handleCustomFocus}
+              disabled={state === 'loading'}
+              placeholder="Enter your answer…"
+              data-testid="ai-clarify-custom-input"
+              className={`w-full rounded-sm border bg-ui-base px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted transition-colors focus:outline-none disabled:opacity-50 ${
+                customSelected || trimmedCustom.length > 0
+                  ? 'border-accent'
+                  : 'border-ui-border focus:border-accent'
+              }`}
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            {currentStep > 0 && (
+              <button
+                type="button"
+                onClick={handleBack}
+                disabled={state === 'loading'}
+                data-testid="ai-clarify-back"
+                className="rounded-sm border border-ui-border bg-transparent px-3 py-2 font-mono text-xs text-text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
+              >
+                ← Back
+              </button>
+            )}
             <button
               type="button"
-              onClick={handleSubmit}
-              disabled={state === 'loading' || !allRequiredAnswered}
-              data-testid="ai-clarify-submit"
-              className="flex-1 rounded-sm bg-accent px-4 py-2 font-mono text-sm font-semibold text-canvas transition-colors hover:bg-accent-hover disabled:opacity-50"
+              onClick={handleSkipQuestion}
+              disabled={state === 'loading'}
+              data-testid="ai-clarify-skip-question"
+              className="rounded-sm border border-ui-border bg-transparent px-3 py-2 font-mono text-xs text-text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
             >
-              {state === 'loading' ? 'Generating…' : 'Generate'}
+              Skip this
             </button>
             <button
               type="button"
-              onClick={handleSkip}
-              disabled={state === 'loading'}
-              data-testid="ai-clarify-skip"
-              className="rounded-sm border border-ui-border bg-transparent px-4 py-2 font-mono text-sm text-text-secondary transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
+              onClick={handleNext}
+              disabled={state === 'loading' || !canAdvance}
+              data-testid="ai-clarify-next"
+              className="ml-auto flex-1 rounded-sm bg-accent px-4 py-2 font-mono text-sm font-semibold text-canvas transition-colors hover:bg-accent-hover disabled:opacity-50"
             >
-              Skip questions
+              {state === 'loading'
+                ? 'Generating…'
+                : isLastQuestion
+                ? 'Generate →'
+                : 'Next →'}
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={handleSkipAll}
+            disabled={state === 'loading'}
+            data-testid="ai-clarify-skip"
+            className="mt-4 w-full text-center font-mono text-[10px] uppercase tracking-[0.2em] text-text-muted underline-offset-2 transition-colors hover:text-accent hover:underline disabled:opacity-50"
+          >
+            Skip all questions and generate anyway
+          </button>
         </div>
       </div>
     </>
