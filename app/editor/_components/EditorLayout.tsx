@@ -863,7 +863,7 @@ export function EditorLayout() {
         savingState={savingState}
       />
       <div
-        className="flex h-[calc(100dvh-3.5rem)] w-dvw flex-col bg-ui-base sm:flex-row"
+        className="mt-14 flex h-[calc(100dvh-3.5rem)] w-dvw flex-col bg-ui-base sm:flex-row"
         data-first-paint={firstPaintActive ? 'true' : undefined}
       >
         {/* Left tool rail — desktop only; on mobile, tools live above the stage. */}
